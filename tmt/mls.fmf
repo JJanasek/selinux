@@ -97,7 +97,25 @@ prepare:
       cp $TMT_TREE/tmt/mls-cloudinit-fix/cloudform.fc .
 
       make -f /usr/share/selinux/devel/Makefile cloudform.pp
-      semodule -i cloudform.pp
+
+      # IMPORTANT: -n / --noreload. `semodule -i` operates on the store
+      # named by /etc/selinux/config's SELINUXTYPE -- which we already set
+      # to "mls" in the previous prepare step -- but by *default* it also
+      # pushes that store live into the running kernel right away via
+      # security_load_policy(), regardless of whether that store matches
+      # the policy the kernel is actually running. We're still running the
+      # guest's original (targeted) boot policy at this point (the mls
+      # store won't actually become the *active* kernel policy until the
+      # reboot below, via /.autorelabel), so forcing the just-built mls
+      # store live now would instantly apply MLS-level checks to every
+      # already-running process/file still labeled under targeted contexts
+      # -- which is exactly what happened the first time this was tried
+      # without -n: the guest broke immediately (`/root/.bashrc: Permission
+      # denied`, tmt's own log-pulling rsync failing with EACCES, ...)
+      # because the live kernel was suddenly enforcing MLS semantics no
+      # running context actually satisfied. -n keeps this an entirely
+      # offline edit of the (currently inactive) mls store.
+      semodule -n -i cloudform.pp
       semodule -l | grep '^cloudform\b'
 
   - name: Reboot to apply MLS and Relabel
