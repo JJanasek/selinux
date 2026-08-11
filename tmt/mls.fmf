@@ -5,6 +5,14 @@ description: |
     the issue lies within the selinux-policy itself, specifically with
     missing rules for cloud-init in the MLS policy.
 
+    A candidate fix lives on JJanasek/selinux-policy@mls-enable-cloud-init
+    (https://github.com/JJanasek/selinux-policy/pull/new/mls-enable-cloud-init):
+    it enables the cloudform module for the mls policy store and adds the
+    NetworkManager/net_conf file management rules cloud-init needs. This
+    plan now builds just the two changed modules from that branch and
+    loads them into the guest's mls store before relabeling/rebooting, so
+    we can confirm the fix clears the cloud-init AVC denials.
+
 prepare:
   - name: Install and configure MLS policy in Permissive mode
     how: shell
@@ -43,6 +51,33 @@ prepare:
       cloud-init clean --logs
 
       touch /.autorelabel
+
+  - name: Build and load cloud-init policy fix (JJanasek/selinux-policy@mls-enable-cloud-init)
+    how: shell
+    script: |
+      dnf install -y git-core checkpolicy policycoreutils-devel make m4 findutils gawk
+
+      git clone --depth=1 --branch mls-enable-cloud-init \
+          https://github.com/JJanasek/selinux-policy.git /root/selinux-policy
+
+      # container.te/if/fc aren't checked into the repo (they're pulled in
+      # from the upstream container-selinux project at build time); other
+      # modules' interfaces reference them, so the module build needs them
+      # present even though we're not touching container policy itself.
+      git clone --depth=1 https://github.com/containers/container-selinux.git /root/container-selinux
+      cp /root/container-selinux/container.* /root/selinux-policy/policy/modules/contrib/
+
+      cd /root/selinux-policy
+      cp dist/mls/modules.conf policy/modules.conf
+      make TYPE=mls NAME=mls -j"$(nproc)" cloudform.pp networkmanager.pp
+
+      # Install straight into the mls module store. This works even
+      # though the guest is still running under its current (non-mls)
+      # policy: -s targets the store by name, not whatever is currently
+      # active, so the fix is baked in and ready for when the box
+      # actually boots into mls after the reboot below.
+      semodule -s mls -i cloudform.pp networkmanager.pp
+      semodule -s mls -l | grep -E '^(cloudform|networkmanager)\b'
 
   - name: Reboot to apply MLS and Relabel
     how: shell
