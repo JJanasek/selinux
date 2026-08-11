@@ -9,7 +9,7 @@ prepare:
   - name: Install and configure MLS policy in Permissive mode
     how: shell
     script: |
-      dnf install -y selinux-policy-mls policycoreutils-python-utils audit
+      dnf install -y selinux-policy-mls policycoreutils-python-utils audit setools-console
       semanage login -m -s sysadm_u root
 
       # Switch to MLS policy
@@ -69,6 +69,29 @@ execute:
 
     echo "=== cloud-init unit activity from this boot ==="
     journalctl -b -u 'cloud-init*' --no-pager || true
+
+    # The captured AVCs show cloud-init running as scontext=init_t instead of
+    # its own confined cloud_init_t domain, even though cloud_init_t-related
+    # types (e.g. cloud_init_tmp_t) exist in the loaded policy (per trawcon
+    # on those denials). This means the init_t -> cloud_init_t domain
+    # transition on exec of the cloud-init entrypoints is not happening.
+    # These checks distinguish between the two possible root causes:
+    #   1) the entrypoint files never got their cloud_init_exec_t label
+    #      during the MLS relabel (a labeling bug, likely the same one
+    #      behind /etc/ld.so.cache ending up unlabeled_t), or
+    #   2) the label is fine, but the MLS-built policy is missing/gating
+    #      out the actual transition rule (a genuine selinux-policy .te gap).
+    echo "=== cloud-init entrypoint labels: on-disk vs policy-expected ==="
+    ls -Z /usr/bin/cloud-init /usr/lib/systemd/system-generators/cloud-init.* 2>&1 || true
+    matchpathcon -V /usr/bin/cloud-init /usr/lib/systemd/system-generators/cloud-init.local-generator /etc/ld.so.cache 2>&1 || true
+    restorecon -nv /usr/bin/cloud-init /usr/lib/systemd/system-generators/cloud-init.local-generator /etc/ld.so.cache 2>&1 || true
+
+    echo "=== does the loaded MLS policy even define the init_t -> cloud_init_t transition? ==="
+    sesearch -A -s init_t -t cloud_init_exec_t -c file -p execute 2>&1 || true
+    sesearch -T -s init_t -t cloud_init_exec_t -c process 2>&1 || true
+
+    echo "=== actual domain cloud-init is running in (should be cloud_init_t) ==="
+    ps -eZ | grep -i cloud || true
 
     echo "=== CAPTURED AVC DENIALS (this boot) ==="
     ausearch -m AVC,USER_AVC -ts boot || true
