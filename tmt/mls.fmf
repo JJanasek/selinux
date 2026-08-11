@@ -7,8 +7,7 @@ description: |
 
     A candidate fix lives on JJanasek/selinux-policy@mls-enable-cloud-init
     (https://github.com/JJanasek/selinux-policy/pull/new/mls-enable-cloud-init):
-    it enables the cloudform module for the mls policy store and adds the
-    NetworkManager/net_conf file management rules cloud-init needs. Since
+    it enables the cloudform module for the mls policy store. Since
     cloudform doesn't exist in the stock mls store at all yet, this plan
     builds it as a standalone third-party module with the standard
     `/usr/share/selinux/devel/Makefile` workflow (the same one
@@ -16,9 +15,26 @@ description: |
     whatever policy is actually installed) and adds it to the guest's live
     mls store with `semodule -i`, before relabeling/rebooting, so we can
     confirm the fix clears the cloud-init AVC denials. The module's source
-    files (cloudform.te/if/fc plus the one new NetworkManager interface)
-    are checked into this plan under mls-cloudinit-fix/, mirroring the
-    fork commits, so the build has no runtime dependency on GitHub.
+    files (cloudform.te/if/fc plus the new NetworkManager and ssh
+    interfaces) are checked into this plan under mls-cloudinit-fix/,
+    mirroring the fork commits, so the build has no runtime dependency on
+    GitHub.
+
+    The first pass of this fix only added NetworkManager/net_conf rules
+    and got cloud-init transitioning into cloud_init_t for the first time
+    (previously it silently ran unconfined as init_t, because cloudform.te
+    relies on `unconfined_domain(cloud_init_t)` for targeted/mcs, which
+    isn't enabled under mls). That surfaced a much larger set of small,
+    previously-invisible gaps in cloudform.te's own ruleset -- dhcpcd pid/
+    signal handling, systemd unit-file status queries, udev trigger/settle,
+    ssh host key reads and ~/.ssh management, shadow reads for the
+    set-passwords module, and locale/timezone file management -- which
+    this second pass adds. One denial (`storage_raw_read_fixed_disk()`
+    hitting a raw block device labeled s15 while cloud_init_t runs at s0)
+    looks like a genuine MLS BLP "no read up" constraint rather than a
+    missing TE rule, and is intentionally left alone pending a separate
+    decision on whether cloud-init's disk-growing modules should be
+    trusted readers under MLS at all.
 
 prepare:
   - name: Install and configure MLS policy in Permissive mode
@@ -77,18 +93,20 @@ prepare:
       # interface headers (corenetwork.if, sysnet.if, ...) already backing
       # the live store, so there's no cross-snapshot mismatch to hit.
       #
-      # cloudform.te calls our new networkmanager_manage_rw_conf interface,
-      # which only exists on the mls-enable-cloud-init fork's
-      # networkmanager.if, not in the stock headers. That interface just
-      # expands into ordinary allow/manage_files_pattern rules against
-      # NetworkManager_etc_t / NetworkManager_etc_rw_t -- types the
-      # already-installed networkmanager module provides -- so we don't
-      # need to rebuild or reinstall networkmanager itself at all. The
-      # devel Makefile picks up every *.if file under each header layer
-      # directory, so dropping our one new interface in as its own file
-      # alongside the stock networkmanager.if is enough; nothing installed
-      # needs to be touched or replaced.
+      # cloudform.te calls our new networkmanager_manage_rw_conf and
+      # ssh_read_server_keys interfaces, which only exist on the
+      # mls-enable-cloud-init fork's networkmanager.if/ssh.if, not in the
+      # stock headers. Both interfaces just expand into ordinary
+      # allow/manage_*_pattern rules against types the already-installed
+      # networkmanager/ssh modules provide -- so we don't need to rebuild
+      # or reinstall those modules at all. The devel Makefile picks up
+      # every *.if file under each header layer directory, so dropping
+      # our new interfaces in as their own files alongside the stock
+      # networkmanager.if/ssh.if is enough; nothing installed needs to be
+      # touched or replaced.
       cp $TMT_TREE/tmt/mls-cloudinit-fix/networkmanager-manage-rw-conf.if \
+          /usr/share/selinux/devel/include/contrib/
+      cp $TMT_TREE/tmt/mls-cloudinit-fix/ssh-read-server-keys.if \
           /usr/share/selinux/devel/include/contrib/
 
       mkdir -p /root/build && cd /root/build
