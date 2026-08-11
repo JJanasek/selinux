@@ -162,25 +162,35 @@ execute:
     echo "=== cloud-init unit activity from this boot ==="
     journalctl -b -u 'cloud-init*' --no-pager || true
 
-    # The captured AVCs show cloud-init running as scontext=init_t instead of
-    # its own confined cloud_init_t domain, even though cloud_init_t-related
-    # types (e.g. cloud_init_tmp_t) exist in the loaded policy (per trawcon
-    # on those denials). This means the init_t -> cloud_init_t domain
-    # transition on exec of the cloud-init entrypoints is not happening.
-    # These checks distinguish between the two possible root causes:
-    #   1) the entrypoint files never got their cloud_init_exec_t label
-    #      during the MLS relabel (a labeling bug, likely the same one
-    #      behind /etc/ld.so.cache ending up unlabeled_t), or
-    #   2) the label is fine, but the MLS-built policy is missing/gating
-    #      out the actual transition rule (a genuine selinux-policy .te gap).
+    # Earlier runs showed the main /usr/bin/cloud-init binary correctly
+    # transitioning into cloud_init_t. But the cloud-init-generator systemd
+    # generator (/usr/lib/systemd/system-generators/cloud-init-generator --
+    # NOTE: earlier versions of this diagnostic had the wrong filename,
+    # "cloud-init.local-generator", which never existed, so this check was
+    # silently a no-op) is observed running as scontext=initrc_t instead of
+    # cloud_init_t, even though cloudform.fc already matches it via the
+    # same `cloud-init.*` pattern as the main binary. That process is also
+    # seen hitting the already-known /etc/ld.so.cache unlabeled_t denial
+    # in the very same boot -- suggesting this generator is just another
+    # casualty of the same relabel-race bug (some files not getting their
+    # real label applied before early-boot processes need them), rather
+    # than a distinct selinux-policy .te gap. These checks confirm that:
+    #   1) whether the generator's on-disk label actually matches what
+    #      cloudform.fc expects (cloud_init_exec_t) or not, and
+    #   2) whether a transition rule exists from *either* init_t or
+    #      initrc_t (systemd may invoke generators from either, depending
+    #      on version/config) to cloud_init_t, in case the label is fine
+    #      but the transition is scoped to the wrong source domain.
     echo "=== cloud-init entrypoint labels: on-disk vs policy-expected ==="
-    ls -Z /usr/bin/cloud-init /usr/lib/systemd/system-generators/cloud-init.* 2>&1 || true
-    matchpathcon -V /usr/bin/cloud-init /usr/lib/systemd/system-generators/cloud-init.local-generator /etc/ld.so.cache 2>&1 || true
-    restorecon -nv /usr/bin/cloud-init /usr/lib/systemd/system-generators/cloud-init.local-generator /etc/ld.so.cache 2>&1 || true
+    ls -Z /usr/bin/cloud-init /usr/lib/systemd/system-generators/cloud-init-generator 2>&1 || true
+    matchpathcon -V /usr/bin/cloud-init /usr/lib/systemd/system-generators/cloud-init-generator /etc/cloud/cloud.cfg.d/99-preserve-ssh-host-keys.cfg /etc/ld.so.cache 2>&1 || true
+    restorecon -nv /usr/bin/cloud-init /usr/lib/systemd/system-generators/cloud-init-generator /etc/cloud/cloud.cfg.d/99-preserve-ssh-host-keys.cfg /etc/ld.so.cache 2>&1 || true
 
-    echo "=== does the loaded MLS policy even define the init_t -> cloud_init_t transition? ==="
+    echo "=== does the loaded MLS policy define an init_t or initrc_t -> cloud_init_t transition? ==="
     sesearch -A -s init_t -t cloud_init_exec_t -c file -p execute 2>&1 || true
     sesearch -T -s init_t -t cloud_init_exec_t -c process 2>&1 || true
+    sesearch -A -s initrc_t -t cloud_init_exec_t -c file -p execute 2>&1 || true
+    sesearch -T -s initrc_t -t cloud_init_exec_t -c process 2>&1 || true
 
     echo "=== actual domain cloud-init is running in (should be cloud_init_t) ==="
     ps -eZ | grep -i cloud || true
