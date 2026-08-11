@@ -46,7 +46,16 @@ prepare:
 
   - name: Reboot to apply MLS and Relabel
     how: shell
-    script: tmt-reboot -t 1200  # Give it 20 minutes just to be safe
+    script: |
+      # IMPORTANT: tmt resumes an interrupted prepare/execute script by
+      # re-running it from the top after the guest reconnects. Without this
+      # guard, every reconnect would immediately request *another* reboot,
+      # forever (this is exactly what happened before: dozens of successful
+      # ~30s reboots in a row, never converging, never timing out cleanly).
+      # Only request the reboot the first time through.
+      if [ "$TMT_REBOOT_COUNT" -eq 0 ]; then
+          tmt-reboot -t 1200  # Give it 20 minutes just to be safe
+      fi
 
 execute:
   how: tmt
