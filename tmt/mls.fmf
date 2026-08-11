@@ -41,15 +41,25 @@ prepare:
     how: shell
     script: |
       dnf install -y selinux-policy-mls policycoreutils-python-utils audit setools-console
-      semanage login -m -s sysadm_u root
 
-      # Switch to MLS policy
-      sed -i 's/^SELINUXTYPE=.*/SELINUXTYPE=mls/' /etc/selinux/config
+      # prepare_for_mls_configure() (tmt/prepare_for_mls.sh) does the
+      # correct, minimal, documented setup for switching to mls: mapping
+      # root to sysadm_u, pointing SELINUXTYPE at the mls store, and
+      # scheduling a full relabel. It's split from prepare_for_mls_reboot()
+      # here because the next prepare step below needs to stage the
+      # cloudform module fix into the (still inactive) mls store before we
+      # actually reboot into it.
+      source $TMT_TREE/tmt/prepare_for_mls.sh
+      prepare_for_mls_configure
 
       # IMPORTANT: Switch to permissive to survive the boot relabel.
       # Permissive still logs every AVC that would have been denied, so
       # this is sufficient for capturing denials without risking another
-      # boot hang from a real enforcing-mode block.
+      # boot hang from a real enforcing-mode block. This is a workaround
+      # for still-open bugs (see the relabel-race denials this plan
+      # captures below), not part of the general/correct MLS switch
+      # procedure documented in prepare_for_mls.sh, so it stays here
+      # instead of in that shared library.
       sed -i 's/^SELINUX=.*/SELINUX=permissive/' /etc/selinux/config
 
       # IMPORTANT: cloud-init's `ssh` module deletes and regenerates the
@@ -72,8 +82,6 @@ prepare:
       # since the domain transition only happens when systemd starts the
       # units.
       cloud-init clean --logs
-
-      touch /.autorelabel
 
   - name: Build and load cloud-init policy fix (JJanasek/selinux-policy@mls-enable-cloud-init)
     how: shell
@@ -139,15 +147,12 @@ prepare:
   - name: Reboot to apply MLS and Relabel
     how: shell
     script: |
-      # IMPORTANT: tmt resumes an interrupted prepare/execute script by
-      # re-running it from the top after the guest reconnects. Without this
-      # guard, every reconnect would immediately request *another* reboot,
-      # forever (this is exactly what happened before: dozens of successful
-      # ~30s reboots in a row, never converging, never timing out cleanly).
-      # Only request the reboot the first time through.
-      if [ "$TMT_REBOOT_COUNT" -eq 0 ]; then
-          tmt-reboot -t 1200  # Give it 20 minutes just to be safe
-      fi
+      # prepare_for_mls_reboot() (tmt/prepare_for_mls.sh) already guards
+      # against tmt re-running this step from the top on every reconnect
+      # (which, unguarded, requested a fresh reboot every time and never
+      # converged) via TMT_REBOOT_COUNT.
+      source $TMT_TREE/tmt/prepare_for_mls.sh
+      prepare_for_mls_reboot
 
 execute:
   how: tmt
