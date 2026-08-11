@@ -69,6 +69,21 @@ prepare:
 
       cd /root/selinux-policy
       cp dist/mls/modules.conf policy/modules.conf
+
+      # Unrelated, pre-existing incompatibility between the current
+      # networkmanager.te and this guest's checkpolicy: this line passes an
+      # `attribute` (networkmanager_dispatcher_plugin) into corecmd_exec_bin(),
+      # which internally does `typeattribute $1 sys_resource_type;`. Assigning
+      # one attribute to another via typeattribute was only added to
+      # checkpolicy in Dec 2025 (SELinuxProject/selinux@1c1631b) and hasn't
+      # been backported to Fedora's stable checkpolicy yet (still 3.9 on
+      # Fedora 43; even Fedora 44 only has it in updates-testing as 3.11).
+      # It has nothing to do with our cloud-init fix, so just drop this one
+      # rule locally on the build guest to unblock compiling networkmanager.pp
+      # here; this is NOT part of the actual fix commits.
+      sed -i '/^corecmd_exec_bin(networkmanager_dispatcher_plugin)$/d' \
+          policy/modules/contrib/networkmanager.te
+
       make TYPE=mls NAME=mls -j"$(nproc)" cloudform.pp networkmanager.pp
 
       # Install straight into the mls module store. This works even
