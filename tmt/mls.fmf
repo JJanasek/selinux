@@ -10,12 +10,13 @@ prepare:
       touch /.autorelabel
 
   - name: Reboot into MLS policy
-    how: reboot
+    how: shell
+    script: tmt-reboot
 
 execute:
   how: tmt
   script: |
-    setenforce 1 || true
+    setenforce 0 || true
     cloud-init clean --logs
     cloud-init init || true
     echo "=== CAPTURED AVC DENIALS ==="
