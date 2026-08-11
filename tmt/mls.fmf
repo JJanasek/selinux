@@ -1,0 +1,23 @@
+summary: MLS Policy Testing Plan
+discover:
+  how: fmf
+prepare:
+  - name: Install MLS policy and tools
+    how: shell
+    script: |
+      dnf install -y selinux-policy-mls policycoreutils-python-utils audit
+      semanage login -m -s sysadm_u root
+      sed -i 's/^SELINUXTYPE=.*/SELINUXTYPE=mls/' /etc/selinux/config
+      touch /.autorelabel
+  - name: Reboot into MLS policy
+    how: reboot
+execute:
+  - name: Run cloud-init and capture AVCs
+    how: shell
+    script: |
+      setenforce 1 || true
+      cloud-init clean --logs
+      cloud-init init || true
+      echo "=== CAPTURED AVC DENIALS ==="
+      ausearch -m AVC,USER_AVC -ts boot || true
+      ausearch -m AVC -ts boot | audit2allow || true
