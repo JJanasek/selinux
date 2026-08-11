@@ -21,6 +21,16 @@ prepare:
       # boot hang from a real enforcing-mode block.
       sed -i 's/^SELINUX=.*/SELINUX=permissive/' /etc/selinux/config
 
+      # IMPORTANT: cloud-init's `ssh` module deletes and regenerates the
+      # SSH host keys on what it thinks is a fresh instance boot (see
+      # below). If the host key changes, tmt/Testing Farm's SSH connection
+      # back to this guest can fail in a way that just looks like "still
+      # waiting for the guest to come back", hanging well past the reboot
+      # timeout instead of failing cleanly. Tell cloud-init to keep the
+      # existing keys instead of deleting them.
+      mkdir -p /etc/cloud/cloud.cfg.d
+      echo 'ssh_deletekeys: false' > /etc/cloud/cloud.cfg.d/99-preserve-ssh-host-keys.cfg
+
       # Reset cloud-init's per-instance state so that on the *next* boot
       # (triggered below) systemd re-runs the full local -> init -> config
       # -> final stage sequence for real, under the correct SELinux domain
