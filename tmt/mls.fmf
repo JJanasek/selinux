@@ -8,10 +8,17 @@ description: |
     A candidate fix lives on JJanasek/selinux-policy@mls-enable-cloud-init
     (https://github.com/JJanasek/selinux-policy/pull/new/mls-enable-cloud-init):
     it enables the cloudform module for the mls policy store and adds the
-    NetworkManager/net_conf file management rules cloud-init needs. This
-    plan now builds just the two changed modules from that branch and
-    loads them into the guest's mls store before relabeling/rebooting, so
-    we can confirm the fix clears the cloud-init AVC denials.
+    NetworkManager/net_conf file management rules cloud-init needs. Since
+    cloudform doesn't exist in the stock mls store at all yet, this plan
+    builds it as a standalone third-party module with the standard
+    `/usr/share/selinux/devel/Makefile` workflow (the same one
+    `policycoreutils-devel` documents for building a single module against
+    whatever policy is actually installed) and adds it to the guest's live
+    mls store with `semodule -i`, before relabeling/rebooting, so we can
+    confirm the fix clears the cloud-init AVC denials. The module's source
+    files (cloudform.te/if/fc plus the one new NetworkManager interface)
+    are checked into this plan under mls-cloudinit-fix/, mirroring the
+    fork commits, so the build has no runtime dependency on GitHub.
 
 prepare:
   - name: Install and configure MLS policy in Permissive mode
@@ -55,44 +62,43 @@ prepare:
   - name: Build and load cloud-init policy fix (JJanasek/selinux-policy@mls-enable-cloud-init)
     how: shell
     script: |
-      dnf install -y git-core checkpolicy policycoreutils-devel make m4 findutils gawk
+      dnf install -y policycoreutils-devel
 
-      git clone --depth=1 --branch mls-enable-cloud-init \
-          https://github.com/JJanasek/selinux-policy.git /root/selinux-policy
+      # IMPORTANT: don't rebuild the whole mls base + module set from
+      # source (tried first; see git history of this file for why that
+      # path -- and hot-patching individual modules from it into the stock
+      # store -- both failed). cloudform doesn't exist in the installed mls
+      # store at all yet, so adding it is a pure `semodule -i` of a new
+      # module, not a replacement of anything -- there's no version to
+      # reconcile. The standard, supported way to build *one* module like
+      # this against whatever policy is actually installed is the devel
+      # Makefile shipped by policycoreutils-devel/selinux-policy-devel: it
+      # builds against /usr/share/selinux/devel/include, the same
+      # interface headers (corenetwork.if, sysnet.if, ...) already backing
+      # the live store, so there's no cross-snapshot mismatch to hit.
+      #
+      # cloudform.te calls our new networkmanager_manage_rw_conf interface,
+      # which only exists on the mls-enable-cloud-init fork's
+      # networkmanager.if, not in the stock headers. That interface just
+      # expands into ordinary allow/manage_files_pattern rules against
+      # NetworkManager_etc_t / NetworkManager_etc_rw_t -- types the
+      # already-installed networkmanager module provides -- so we don't
+      # need to rebuild or reinstall networkmanager itself at all. The
+      # devel Makefile picks up every *.if file under each header layer
+      # directory, so dropping our one new interface in as its own file
+      # alongside the stock networkmanager.if is enough; nothing installed
+      # needs to be touched or replaced.
+      cp $TMT_TREE/tmt/mls-cloudinit-fix/networkmanager-manage-rw-conf.if \
+          /usr/share/selinux/devel/include/contrib/
 
-      # container.te/if/fc aren't checked into the repo (they're pulled in
-      # from the upstream container-selinux project at build time); other
-      # modules' interfaces reference them, so the module build needs them
-      # present even though we're not touching container policy itself.
-      git clone --depth=1 https://github.com/containers/container-selinux.git /root/container-selinux
-      cp /root/container-selinux/container.* /root/selinux-policy/policy/modules/contrib/
+      mkdir -p /root/build && cd /root/build
+      cp $TMT_TREE/tmt/mls-cloudinit-fix/cloudform.te .
+      cp $TMT_TREE/tmt/mls-cloudinit-fix/cloudform.if .
+      cp $TMT_TREE/tmt/mls-cloudinit-fix/cloudform.fc .
 
-      cd /root/selinux-policy
-      cp dist/mls/modules.conf policy/modules.conf
-
-      # Unrelated, pre-existing incompatibility between the current
-      # networkmanager.te and this guest's checkpolicy: this line passes an
-      # `attribute` (networkmanager_dispatcher_plugin) into corecmd_exec_bin(),
-      # which internally does `typeattribute $1 sys_resource_type;`. Assigning
-      # one attribute to another via typeattribute was only added to
-      # checkpolicy in Dec 2025 (SELinuxProject/selinux@1c1631b) and hasn't
-      # been backported to Fedora's stable checkpolicy yet (still 3.9 on
-      # Fedora 43; even Fedora 44 only has it in updates-testing as 3.11).
-      # It has nothing to do with our cloud-init fix, so just drop this one
-      # rule locally on the build guest to unblock compiling networkmanager.pp
-      # here; this is NOT part of the actual fix commits.
-      sed -i '/^corecmd_exec_bin(networkmanager_dispatcher_plugin)$/d' \
-          policy/modules/contrib/networkmanager.te
-
-      make TYPE=mls NAME=mls -j"$(nproc)" cloudform.pp networkmanager.pp
-
-      # Install straight into the mls module store. This works even
-      # though the guest is still running under its current (non-mls)
-      # policy: -s targets the store by name, not whatever is currently
-      # active, so the fix is baked in and ready for when the box
-      # actually boots into mls after the reboot below.
-      semodule -s mls -i cloudform.pp networkmanager.pp
-      semodule -s mls -l | grep -E '^(cloudform|networkmanager)\b'
+      make -f /usr/share/selinux/devel/Makefile cloudform.pp
+      semodule -i cloudform.pp
+      semodule -l | grep '^cloudform\b'
 
   - name: Reboot to apply MLS and Relabel
     how: shell

@@ -1,0 +1,33 @@
+## <summary>Additional NetworkManager interface needed by the cloudform module's cloud-init fix.</summary>
+##
+## <summary>
+## This is a standalone copy of the new `networkmanager_manage_rw_conf`
+## interface added to networkmanager.if on
+## JJanasek/selinux-policy@mls-enable-cloud-init. It is shipped as its own
+## file here (instead of overwriting the installed networkmanager.if)
+## because the devel Makefile picks up every `*.if` file under each header
+## layer directory, so dropping this in alongside the stock
+## networkmanager.if is enough for cloudform.te to see it at compile time
+## -- no need to touch/replace anything already installed.
+## </summary>
+
+#######################################
+## <summary>
+##  Create, read, write, set attributes on, and rename
+##  NetworkManager rw conf files.
+## </summary>
+## <param name="domain">
+##  <summary>
+##  Domain allowed access.
+##  </summary>
+## </param>
+#
+interface(`networkmanager_manage_rw_conf',`
+	gen_require(`
+		type NetworkManager_etc_t;
+		type NetworkManager_etc_rw_t;
+	')
+
+	allow $1 NetworkManager_etc_t:dir list_dir_perms;
+	manage_files_pattern($1, NetworkManager_etc_t, NetworkManager_etc_rw_t)
+')
