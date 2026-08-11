@@ -1,24 +1,58 @@
 summary: MLS Policy Investigation Plan
+description: |
+    The initial problem was thought to be an infrastructure limitation
+    preventing MLS policy testing. However, experimentation has shown that
+    the issue lies within the selinux-policy itself, specifically with
+    missing rules for cloud-init in the MLS policy.
 
 prepare:
-  - name: Install MLS policy and tools
+  - name: Install and configure MLS policy in Permissive mode
     how: shell
     script: |
       dnf install -y selinux-policy-mls policycoreutils-python-utils audit
       semanage login -m -s sysadm_u root
+
+      # Switch to MLS policy
       sed -i 's/^SELINUXTYPE=.*/SELINUXTYPE=mls/' /etc/selinux/config
+
+      # IMPORTANT: Switch to permissive to survive the boot relabel.
+      # Permissive still logs every AVC that would have been denied, so
+      # this is sufficient for capturing denials without risking another
+      # boot hang from a real enforcing-mode block.
+      sed -i 's/^SELINUX=.*/SELINUX=permissive/' /etc/selinux/config
+
+      # Reset cloud-init's per-instance state so that on the *next* boot
+      # (triggered below) systemd re-runs the full local -> init -> config
+      # -> final stage sequence for real, under the correct SELinux domain
+      # transitions. Manually re-invoking `cloud-init` from a login shell
+      # after boot does NOT reproduce this: it skips the config/final
+      # stages (most filesystem-changing modules live there) and it runs
+      # in your login domain instead of the dedicated cloud-init domain(s),
+      # since the domain transition only happens when systemd starts the
+      # units.
+      cloud-init clean --logs
+
       touch /.autorelabel
 
-  - name: Reboot into MLS policy
+  - name: Reboot to apply MLS and Relabel
     how: shell
-    script: tmt-reboot
+    script: tmt-reboot -t 1200  # Give it 20 minutes just to be safe
 
 execute:
   how: tmt
   script: |
-    setenforce 0 || true
-    cloud-init clean --logs
-    cloud-init init || true
-    echo "=== CAPTURED AVC DENIALS ==="
+    echo "=== SELinux status ==="
+    getenforce
+    sestatus
+
+    echo "=== cloud-init result from this boot ==="
+    cloud-init status --long || true
+
+    echo "=== cloud-init unit activity from this boot ==="
+    journalctl -b -u 'cloud-init*' --no-pager || true
+
+    echo "=== CAPTURED AVC DENIALS (this boot) ==="
     ausearch -m AVC,USER_AVC -ts boot || true
+
+    echo "=== Suggested policy for observed denials ==="
     ausearch -m AVC -ts boot | audit2allow || true
