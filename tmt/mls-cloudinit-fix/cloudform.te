@@ -69,7 +69,7 @@ miscfiles_read_certs(cloudform_domain)
 # cloud-init local policy
 #
 
-allow cloud_init_t self:capability { fowner chown fsetid dac_read_search dac_override kill };
+allow cloud_init_t self:capability { fowner chown fsetid dac_read_search dac_override kill setgid };
 allow cloud_init_t self:passwd { passwd rootok };
 
 allow cloud_init_t self:udp_socket create_socket_perms;
@@ -98,6 +98,7 @@ corecmd_exec_shell(cloud_init_t)
 domain_read_all_domains_state(cloud_init_t)
 
 fs_getattr_all_fs(cloud_init_t)
+fs_getattr_nsfs_files(cloud_init_t)
 
 storage_raw_read_fixed_disk(cloud_init_t)
 
@@ -188,6 +189,7 @@ optional_policy(`
     sysnet_filetrans_cloud_net_conf(cloud_init_t)
     sysnet_manage_config(cloud_init_t)
     sysnet_manage_config_dirs(cloud_init_t)
+    sysnet_manage_config_sockets(cloud_init_t)
     sysnet_read_dhcpc_pid(cloud_init_t)
     sysnet_kill_dhcpc(cloud_init_t)
 ')

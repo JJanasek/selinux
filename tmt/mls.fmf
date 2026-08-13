@@ -29,12 +29,22 @@ description: |
     signal handling, systemd unit-file status queries, udev trigger/settle,
     ssh host key reads and ~/.ssh management, shadow reads for the
     set-passwords module, and locale/timezone file management -- which
-    this second pass adds. One denial (`storage_raw_read_fixed_disk()`
-    hitting a raw block device labeled s15 while cloud_init_t runs at s0)
-    looks like a genuine MLS BLP "no read up" constraint rather than a
-    missing TE rule, and is intentionally left alone pending a separate
-    decision on whether cloud-init's disk-growing modules should be
-    trusted readers under MLS at all.
+    the second pass adds. A third pass, after re-running with only the
+    prior two passes' rules and diffing the fresh denial set, closes three
+    more boot-to-boot-variable gaps that hadn't shown up in every run:
+    cloud-init's own stage-synchronization sockets under
+    /run/cloud-init/share/*.sock are a distinct sock_file object class
+    from the plain files sysnet_manage_config() already covers (needs its
+    own sysnet_manage_config_sockets() interface), `setgid` (dropping to
+    the `adm` group before writing command-output logs) is a distinct
+    capability from the ones already granted, and `systemd-detect-virt`'s
+    container check needs nsfs file getattr. One denial
+    (`storage_raw_read_fixed_disk()` hitting a raw block device labeled
+    s15 while cloud_init_t runs at s0) looks like a genuine MLS BLP "no
+    read up" constraint rather than a missing TE rule, and is
+    intentionally left alone pending a separate decision on whether
+    cloud-init's disk-growing modules should be trusted readers under MLS
+    at all.
 
 prepare:
   - name: Install and configure MLS policy in Permissive mode
@@ -101,21 +111,24 @@ prepare:
       # interface headers (corenetwork.if, sysnet.if, ...) already backing
       # the live store, so there's no cross-snapshot mismatch to hit.
       #
-      # cloudform.te calls our new networkmanager_manage_rw_conf and
-      # ssh_read_server_keys interfaces, which only exist on the
-      # mls-enable-cloud-init fork's networkmanager.if/ssh.if, not in the
-      # stock headers. Both interfaces just expand into ordinary
-      # allow/manage_*_pattern rules against types the already-installed
-      # networkmanager/ssh modules provide -- so we don't need to rebuild
-      # or reinstall those modules at all. The devel Makefile picks up
-      # every *.if file under each header layer directory, so dropping
-      # our new interfaces in as their own files alongside the stock
-      # networkmanager.if/ssh.if is enough; nothing installed needs to be
-      # touched or replaced.
+      # cloudform.te calls our new networkmanager_manage_rw_conf,
+      # ssh_read_server_keys, and sysnet_manage_config_sockets interfaces,
+      # which only exist on the mls-enable-cloud-init fork's
+      # networkmanager.if/ssh.if/sysnetwork.if, not in the stock headers.
+      # All three interfaces just expand into ordinary allow/manage_*_pattern
+      # rules against types the already-installed networkmanager/ssh/
+      # sysnetwork modules provide -- so we don't need to rebuild or
+      # reinstall those modules at all. The devel Makefile picks up every
+      # *.if file under each header layer directory, so dropping our new
+      # interfaces in as their own files alongside the stock
+      # networkmanager.if/ssh.if/sysnetwork.if is enough; nothing installed
+      # needs to be touched or replaced.
       cp $TMT_TREE/tmt/mls-cloudinit-fix/networkmanager-manage-rw-conf.if \
           /usr/share/selinux/devel/include/contrib/
       cp $TMT_TREE/tmt/mls-cloudinit-fix/ssh-read-server-keys.if \
           /usr/share/selinux/devel/include/contrib/
+      cp $TMT_TREE/tmt/mls-cloudinit-fix/sysnetwork-manage-config-sockets.if \
+          /usr/share/selinux/devel/include/system/
 
       mkdir -p /root/build && cd /root/build
       cp $TMT_TREE/tmt/mls-cloudinit-fix/cloudform.te .

@@ -1,0 +1,31 @@
+## <summary>Additional sysnetwork interface needed by the cloudform module cloud-init fix.</summary>
+##
+## <summary>
+## This is a standalone copy of the new sysnet_manage_config_sockets
+## interface added to sysnetwork.if on JJanasek/selinux-policy at
+## mls-enable-cloud-init. It is shipped as its own file here (instead of
+## overwriting the installed sysnetwork.if) because the devel Makefile
+## picks up every .if file under each header layer directory, so dropping
+## this in alongside the stock sysnetwork.if is enough for cloudform.te to
+## see it at compile time, with no need to touch or replace anything
+## already installed.
+## </summary>
+
+########################################
+## <summary>
+##	Create, read, write and delete
+##      network config sockets.
+## </summary>
+## <param name="domain">
+## <summary>
+##	Domain allowed access.
+## </summary>
+## </param>
+#
+interface(`sysnet_manage_config_sockets',`
+	gen_require(`
+		type net_conf_t;
+	')
+
+	manage_sock_files_pattern($1, net_conf_t, net_conf_t)
+')
