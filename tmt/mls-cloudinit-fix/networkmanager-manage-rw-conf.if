@@ -30,12 +30,6 @@ interface(`networkmanager_manage_rw_conf',`
 
 	allow $1 NetworkManager_etc_t:dir list_dir_perms;
 	manage_files_pattern($1, NetworkManager_etc_t, NetworkManager_etc_rw_t)
-	# NetworkManager_etc_rw_t is also used as the type of the
-	# system-connections directory itself (not just the files inside
-	# it), so it needs to be manageable as a dir too.
 	manage_dirs_pattern($1, NetworkManager_etc_t, NetworkManager_etc_rw_t)
-	# Some generated connection state is written as plain
-	# NetworkManager_etc_t files directly under /etc/NetworkManager,
-	# distinct from the NetworkManager_etc_rw_t files above.
 	manage_files_pattern($1, NetworkManager_etc_t, NetworkManager_etc_t)
 ')

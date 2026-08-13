@@ -70,9 +70,6 @@ miscfiles_read_certs(cloudform_domain)
 #
 
 allow cloud_init_t self:capability { fowner chown fsetid dac_read_search dac_override kill };
-# Needed for the "set-passwords" module own self password-management
-# check, distinct from the passwd_t transition below (which handles the
-# actual chpasswd/passwd invocation).
 allow cloud_init_t self:passwd { passwd rootok };
 
 allow cloud_init_t self:udp_socket create_socket_perms;
@@ -89,10 +86,6 @@ manage_files_pattern(cloud_init_t, cloud_log_t, cloud_log_t)
 logging_log_filetrans(cloud_init_t, cloud_log_t, { file })
 
 init_dbus_chat(cloud_init_t)
-# Needed to query unit file state via the systemd manager-level "system"
-# object class (e.g. checking whether a service is enabled/masked before
-# (re)starting it), separate from the per-unit "service" class checks
-# systemd_start_all_services() already covers.
 init_status(cloud_init_t)
 
 kernel_read_network_state(cloud_init_t)
@@ -109,9 +102,6 @@ fs_getattr_all_fs(cloud_init_t)
 storage_raw_read_fixed_disk(cloud_init_t)
 
 auth_use_nsswitch(cloud_init_t)
-# The "set-passwords" module checks a current shadow entry (e.g. whether
-# the account is already locked) before deciding whether to invoke
-# chpasswd/passwd (usermanage_domtrans_passwd, below).
 auth_read_shadow(cloud_init_t)
 
 files_setattr_etc_dirs(cloud_init_t)
@@ -121,8 +111,6 @@ libs_exec_ldconfig(cloud_init_t)
 logging_send_syslog_msg(cloud_init_t)
 
 miscfiles_read_localization(cloud_init_t)
-# The "timezone"/"locale" modules write /etc/localtime, /etc/locale.conf,
-# /etc/timezone, etc.
 miscfiles_manage_localization(cloud_init_t)
 
 selinux_validate_context(cloud_init_t)
@@ -153,11 +141,7 @@ optional_policy(`
 
 optional_policy(`
     networkmanager_dbus_chat(cloud_init_t)
-    # cloud-init writes/renames/sets attributes on the .nmconnection files
-    # it generates under /etc/NetworkManager/system-connections/.
     networkmanager_manage_rw_conf(cloud_init_t)
-    # cloud-init checks/reloads the NetworkManager.service unit after
-    # writing new connection profiles.
     networkmanager_systemctl(cloud_init_t)
 ')
 
@@ -191,10 +175,6 @@ optional_policy(`
 optional_policy(`
     ssh_read_user_home_files(cloud_init_t)
     ssh_domtrans_keygen(cloud_init_t)
-    # The cloud-init ssh module reads and fingerprints the (now preserved,
-    # see ssh_deletekeys) host keys on every boot, and manages the
-    # per-user ~/.ssh content (authorized_keys, permissions) for the
-    # accounts it creates/configures.
     ssh_read_server_keys(cloud_init_t)
     ssh_manage_home_files(cloud_init_t)
     manage_dirs_pattern(cloud_init_t, ssh_home_t, ssh_home_t)
@@ -206,19 +186,8 @@ optional_policy(`
     sysnet_read_dhcpc_state(cloud_init_t)
     sysnet_dns_name_resolve(cloud_init_t)
     sysnet_filetrans_cloud_net_conf(cloud_init_t)
-    # cloud-init creates, renames, and sets attributes on network config
-    # state it writes under /run/cloud-init (cloud-id, cloud-id-aws,
-    # network-config.json, apply_network_config.once, etc.); the filetrans
-    # above only labels the containing directory, it does not by itself
-    # grant file management on net_conf_t.
     sysnet_manage_config(cloud_init_t)
-    # sysnet_manage_config() only grants rw_dir_perms (no setattr) on the
-    # net_conf_t directory itself; cloud-init also chmods/chowns some of
-    # the directories it creates under /run/cloud-init.
     sysnet_manage_config_dirs(cloud_init_t)
-    # cloud-init reads the dhcpcd PID file to signal it (e.g. to release/
-    # renew a lease as part of network configuration) and to check
-    # whether it is still running.
     sysnet_read_dhcpc_pid(cloud_init_t)
     sysnet_kill_dhcpc(cloud_init_t)
 ')
@@ -232,10 +201,6 @@ optional_policy(`
         type udev_t, udev_var_run_t;
     ')
 
-    # The cloud-init networking stage runs udevadm trigger/settle (e.g.
-    # after writing new NetworkManager connection profiles or custom udev
-    # rules) to make the kernel/udevd pick up device state without
-    # waiting for a reboot.
     udev_exec(cloud_init_t)
     udev_manage_rules_files(cloud_init_t)
     stream_connect_pattern(cloud_init_t, udev_var_run_t, udev_var_run_t, udev_t)
