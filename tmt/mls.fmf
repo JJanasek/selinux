@@ -81,6 +81,24 @@ description: |
     installing/configuring anything before the reboot (which is
     unavoidable) leaves files with the old policy's user on disk.
 
+    With ld.so.cache fixed, the next enforcing boot got further but hit
+    a different hang: local-fs.target failed waiting on /dev/disk/by-uuid
+    symlinks that udev never produced, landing in emergency mode (a dead
+    end -- no sshd, root locked). Marking every systemd `*_generator_t`
+    domain permissive (in case the generator-stage kmsg/bash denials were
+    the cause) didn't change this outcome, so those were a red herring.
+    Static review of udev_t/fsadm_t/lvm_t shows they're already heavily
+    MLS-trusted (`mls_file_read_all_levels` and friends) in the stock
+    policy, so the cause isn't obvious from source alone, and the
+    console log can't show it either (`kauditd_printk_skb: N callbacks
+    suppressed` -- the real denial(s) never made it to the console
+    before auditd was up to drain them). To get real evidence instead of
+    guessing further, the plan now makes the enforcing-mode local-fs
+    failure survivable (temporary `nofail` on non-root fstab entries) and
+    makes sure the underlying AVCs actually get captured
+    (`audit_backlog_limit=8192`, up from the kernel default of 64), then
+    inspects the loaded policy and captured denials directly.
+
 prepare:
   - name: Install and configure MLS policy in Permissive mode
     how: shell
@@ -280,6 +298,48 @@ prepare:
           done
           semanage permissive -l | grep generator
 
+          # That generator probe got past the generator/kmsg denials, but
+          # the *next* enforcing boot still hung: local-fs.target failed
+          # (boot.mount, boot-efi.mount, home.mount, var.mount all timed
+          # out waiting for their /dev/disk/by-uuid symlinks -- i.e.
+          # something in the udev/blkid path isn't working under
+          # enforcing), which cascades into emergency mode, which is a
+          # dead end for tmt (no sshd, root locked). Console output alone
+          # couldn't explain *why*: `kauditd_printk_skb: N callbacks
+          # suppressed` shows the kernel was rate-limiting how many AVCs
+          # it echoed to the console once auditd wasn't yet up to drain
+          # them, so the actual denial(s) responsible were never visible.
+          #
+          # Static policy review makes the obvious suspects unlikely:
+          # udev_t already carries mls_file_read_all_levels (and more),
+          # and the fstools module (which udev_t domtrans's to for blkid,
+          # landing in fsadm_t -- also mls_file_read_all_levels'd) is
+          # enabled for mls. So this needs real evidence, not more
+          # guessing from static analysis. Two changes to get it:
+          #
+          #  1. `nofail` + a short device-timeout on every non-swap fstab
+          #     mount, so a stuck-forever by-uuid symlink can no longer
+          #     block local-fs.target -> multi-user.target -> sshd. This
+          #     doesn't fix anything; it just stops the symptom (hang)
+          #     from hiding the cause, by letting us reach a live SSH
+          #     session after the same underlying failure occurs.
+          #  2. `audit_backlog_limit=8192` (default is 64) on the kernel
+          #     command line, so early-boot AVCs queue up for auditd
+          #     instead of being dropped once the default 64-entry
+          #     backlog fills -- independent of and in addition to the
+          #     console print-rate-limit above; this is what actually
+          #     guarantees ausearch can find them later, regardless of
+          #     what did or didn't make it to the console.
+          cp /etc/fstab /etc/fstab.pre-nofail-probe
+          awk '!/^#/ && NF >= 4 && $3 != "swap" { $4 = $4",nofail,x-systemd.device-timeout=10" } { print }' \
+              /etc/fstab.pre-nofail-probe > /etc/fstab
+          echo "=== /etc/fstab after adding nofail (diagnostic only) ==="
+          cat /etc/fstab
+
+          grubby --update-kernel=ALL --args="audit_backlog_limit=8192"
+          echo "=== confirm audit_backlog_limit landed on the default boot entry ==="
+          grubby --info=DEFAULT | grep args
+
           sed -i 's/^SELINUX=.*/SELINUX=enforcing/' /etc/selinux/config
 
           # Force a full, fresh local -> init -> config -> final cloud-init
@@ -290,6 +350,42 @@ prepare:
           cloud-init clean --logs
 
           tmt-reboot -t 1200
+      fi
+
+  - name: Investigate the enforcing-boot disk-by-uuid timeout (udev/blkid MLS theory)
+    how: shell
+    script: |
+      if [ "${TEST_ENFORCING:-1}" = "1" ]; then
+          echo "=== did local-fs.target actually fail again this boot? ==="
+          systemctl status local-fs.target --no-pager 2>&1 || true
+          systemctl list-jobs 2>&1 || true
+
+          echo "=== restore fstab (nofail was diagnostic-only) ==="
+          if [ -f /etc/fstab.pre-nofail-probe ]; then
+              mv /etc/fstab.pre-nofail-probe /etc/fstab
+          fi
+
+          echo "=== full AVC list, this boot (should now be complete: audit_backlog_limit=8192) ==="
+          ausearch -m AVC,USER_AVC -ts boot 2>&1 || true
+
+          echo "=== specifically: anything denied on a fixed_disk_device_t / blk_file, and who ==="
+          ausearch -m AVC -ts boot 2>&1 | grep -E 'blk_file|fixed_disk_device_t' || echo "none found"
+
+          echo "=== is udev_t (or whatever ran blkid) actually mlsfileread-trusted in the *loaded* policy? ==="
+          seinfo -a mlsfileread -x 2>&1 | grep -E 'udev_t|fsadm_t|lvm_t' || echo "none of udev_t/fsadm_t/lvm_t carry mlsfileread in the loaded policy"
+
+          echo "=== what actually ran systemd-udevd / blkid, and in which domain ==="
+          ps -eZ 2>&1 | grep -E 'udev|blkid' || true
+          journalctl -b -u systemd-udevd --no-pager 2>&1 || true
+
+          echo "=== do the by-uuid symlinks exist now (after nofail let boot continue)? ==="
+          ls -la /dev/disk/by-uuid/ 2>&1 || true
+          for u in $(ls /dev/disk/by-uuid/ 2>/dev/null); do
+              blkid /dev/disk/by-uuid/"$u" 2>&1 || true
+          done
+
+          echo "=== try running blkid directly against the raw disk, see what it hits live ==="
+          lsblk -no NAME,UUID 2>&1 || true
       fi
 
 execute:
