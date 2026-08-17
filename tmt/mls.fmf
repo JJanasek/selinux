@@ -66,10 +66,20 @@ description: |
     reconnect times out. So this was never a race; the file's on-disk
     context is durably wrong (`unconfined_u:object_r:ld_so_cache_t:s0`
     -- a leftover *targeted*-policy context; unconfined_u isn't even a
-    valid mls user) and something is preventing the relabel from ever
-    correcting it. Currently investigating why (see the new prepare step
-    below); the enforcing-mode reboot is gated behind $TEST_ENFORCING
-    in the meantime so it doesn't burn 20 minutes hanging on every run.
+    valid mls user).
+
+    Root-caused it: plain restorecon/setfiles (as run by the standard
+    boot-time `/.autorelabel` relabel) only fix a file's *type*, never
+    its user/role/range, unless given `-F`. Since `ld_so_cache_t` is the
+    same type under both targeted and mls, the relabel sees "type
+    already correct" and leaves the stale targeted-policy user in
+    place forever -- confirmed directly: plain `restorecon` reports no
+    change, `restorecon -F` fixes it (`unconfined_u` -> `system_u`).
+    `prepare_for_mls.sh` now does a forced, full-context
+    `restorecon -RF /` after the reboot (`prepare_for_mls_force_relabel`)
+    to fix this for every file, not just ld.so.cache -- necessary since
+    installing/configuring anything before the reboot (which is
+    unavoidable) leaves files with the old policy's user on disk.
 
 prepare:
   - name: Install and configure MLS policy in Permissive mode
@@ -192,7 +202,7 @@ prepare:
       source $TMT_TREE/tmt/prepare_for_mls.sh
       prepare_for_mls_reboot
 
-  - name: Investigate why /etc/ld.so.cache keeps an invalid post-relabel context
+  - name: Confirm and fix the /etc/ld.so.cache invalid post-relabel context
     how: shell
     script: |
       # A second, already-fully-relabeled reboot into enforcing still hit
@@ -206,12 +216,17 @@ prepare:
       # exactly like a leftover *targeted*-policy context that a full
       # mls relabel should have overwritten, but didn't.
       #
-      # Leading theory: restorecon/setfiles only fixes the *type*
+      # Confirmed root cause: restorecon/setfiles only fix the *type*
       # component of a context by default; fixing the user/role/range
-      # too requires -F. ld_so_cache_t is (presumably) the same type
-      # name under both targeted and mls, so the relabel sees "type
-      # already correct" and never touches the stale unconfined_u/s0
-      # left over from before the policy switch. Verify this directly:
+      # too requires -F. ld_so_cache_t is the same type name under both
+      # targeted and mls, so the boot-time relabel sees "type already
+      # correct" and never touches the stale unconfined_u/s0 left over
+      # from before the policy switch (matchpathcon -V even reports the
+      # file as "verified" for the same reason). Demonstrated below, then
+      # fixed properly for real via prepare_for_mls_force_relabel()
+      # (tmt/prepare_for_mls.sh), which now does a forced, full-context
+      # `restorecon -RF /` after the reboot -- see its comment for why
+      # this can't run before the reboot.
       echo "=== current on-disk context ==="
       ls -Z /etc/ld.so.cache
       stat /etc/ld.so.cache
@@ -223,22 +238,21 @@ prepare:
       restorecon -v /etc/ld.so.cache; echo "exit=$?"
       ls -Z /etc/ld.so.cache
 
-      echo "=== does a full-context restorecon (-F, also fixes user/role/range) fix it? ==="
-      restorecon -F -v /etc/ld.so.cache; echo "exit=$?"
-      ls -Z /etc/ld.so.cache
+      echo "=== full-context relabel of the whole filesystem (the actual fix) ==="
+      source $TMT_TREE/tmt/prepare_for_mls.sh
+      prepare_for_mls_force_relabel
 
-      echo "=== was this file touched by anything after the relabel this boot? ==="
-      journalctl -b --no-pager -o short-monotonic | grep -iE 'ldconfig|relabel' || true
+      echo "=== /etc/ld.so.cache context after the forced relabel ==="
+      ls -Z /etc/ld.so.cache
 
   - name: Switch to Enforcing and reboot again (tests acceptance criterion 1 for real)
     how: shell
     script: |
-      # Gated behind TEST_ENFORCING: the previous run of this step hung
-      # for the full 20-minute reboot timeout (see the investigation
-      # step above) on the still-open /etc/ld.so.cache mislabeling bug,
-      # so it no longer runs by default while that's being tracked down
-      # -- no point burning 20 minutes on every iteration.
-      if [ "${TEST_ENFORCING:-0}" = "1" ] && [ ! -f /root/.mls-enforcing-switch-done ]; then
+      # Gated behind TEST_ENFORCING (default on now that the previous
+      # step's forced relabel should have fixed the root cause of the
+      # hang this step used to reproduce -- flip it off again if it
+      # regresses without wanting to burn 20 minutes on every run).
+      if [ "${TEST_ENFORCING:-1}" = "1" ] && [ ! -f /root/.mls-enforcing-switch-done ]; then
           touch /root/.mls-enforcing-switch-done
 
           sed -i 's/^SELINUX=.*/SELINUX=enforcing/' /etc/selinux/config

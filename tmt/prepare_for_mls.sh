@@ -27,6 +27,23 @@
 #      use; the running kernel keeps enforcing whatever policy it already
 #      loaded) and so init runs the scheduled relabel before anything else
 #      starts.
+#   5. Once back up under the mls kernel policy, force a second,
+#      full-context relabel (`restorecon -RF /`). The boot-time relabel
+#      from step 3/4 only fixes each file's *type* -- by design, plain
+#      restorecon/setfiles never touch the user or role components
+#      unless given -F, since those normally don't need fixing. But any
+#      file written while the system still ran under the old policy
+#      (inevitable: package installs, config edits, ... anything before
+#      the reboot) keeps that policy's user forever otherwise. Confirmed
+#      on /etc/ld.so.cache: after a full boot-time relabel it still read
+#      `unconfined_u:object_r:ld_so_cache_t:s0` -- unconfined_u isn't
+#      even a valid SELinux user under mls, so the kernel falls back to
+#      unlabeled_t and denies access -- and only restorecon -F, not
+#      plain restorecon, actually fixed it. This has to run after the
+#      reboot in step 4, not before: setting a context via setxattr is
+#      validated against the *currently loaded kernel* policy, so
+#      relabeling to mls-only types/ranges while still running the old
+#      policy would fail.
 #
 # Usage:
 #   source prepare_for_mls.sh
@@ -36,11 +53,15 @@
 # not return (or, under tmt, triggers a tmt-aware reboot that resumes the
 # calling test step afterwards -- see prepare_for_mls_reboot below).
 #
-# Steps 1-3 (configuration) and step 4 (the reboot) are also available as
-# separate functions, prepare_for_mls_configure and prepare_for_mls_reboot,
-# for callers that need to do additional setup -- e.g. staging extra policy
-# modules into the not-yet-active mls store -- in between configuring the
-# system and actually rebooting into it.
+# Steps 1-3 (configuration), step 4 (the reboot), and step 5 (the
+# post-reboot forced relabel) are also available as separate functions --
+# prepare_for_mls_configure, prepare_for_mls_reboot, and
+# prepare_for_mls_force_relabel -- for callers that need to do additional
+# setup -- e.g. staging extra policy modules into the not-yet-active mls
+# store -- in between configuring the system and actually rebooting into
+# it, or that run each step as its own separate tmt prepare phase (a
+# reboot tears down the running script, so anything meant to run after it
+# has to live in a call/step that only actually executes post-reboot).
 
 prepare_for_mls_configure() {
     semanage login -m -s sysadm_u root
@@ -65,7 +86,12 @@ prepare_for_mls_reboot() {
     fi
 }
 
+prepare_for_mls_force_relabel() {
+    restorecon -RF / 2>&1 | tail -50
+}
+
 prepare_for_mls() {
     prepare_for_mls_configure
     prepare_for_mls_reboot
+    prepare_for_mls_force_relabel
 }
