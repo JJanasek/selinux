@@ -225,3 +225,24 @@ execute:
 
     echo "=== Suggested policy for observed denials ==="
     ausearch -m AVC -ts boot | audit2allow || true
+
+    # Relabel-race investigation: does /.autorelabel even get consumed on
+    # this image? systemd/dracut's autorelabel handling deletes the flag
+    # file itself once the relabel completes -- if it's still present
+    # after boot, the relabel service never ran at all, which would
+    # explain the unlabeled_t denials far better than a race between
+    # relabel and early boot units.
+    echo "=== is /.autorelabel still present after boot? (it should have been consumed) ==="
+    ls -la /.autorelabel 2>&1 || echo "/.autorelabel absent (consumed, as expected)"
+
+    echo "=== does a selinux-autorelabel(-mark).service unit exist / did it run? ==="
+    systemctl list-unit-files 'selinux-autorelabel*' 2>&1 || true
+    systemctl status selinux-autorelabel.service 2>&1 || true
+    journalctl -b -u 'selinux-autorelabel*' --no-pager -o short-monotonic 2>&1 || true
+
+    echo "=== full early-boot unit timeline, for correlating relabel vs cloud-init start ==="
+    journalctl -b --no-pager -o short-monotonic | head -200 || true
+
+    echo "=== exact epoch timestamps: first unlabeled_t AVC vs cloud-init-local.service start ==="
+    ausearch -m AVC -ts boot 2>/dev/null | grep -m1 unlabeled_t || true
+    journalctl -b -u cloud-init-local.service --no-pager -o short-precise 2>&1 | head -5 || true
