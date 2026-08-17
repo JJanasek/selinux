@@ -255,6 +255,29 @@ prepare:
       if [ "${TEST_ENFORCING:-1}" = "1" ] && [ ! -f /root/.mls-enforcing-switch-done ]; then
           touch /root/.mls-enforcing-switch-done
 
+          # The ld.so.cache fix above cleared that denial, but the very
+          # next enforcing boot then hung on a *different*, pre-existing
+          # gap in the stock mls policy's systemd module -- unrelated to
+          # cloudform/cloud-init, and with a long history of similar
+          # one-off bugs upstream (e.g. RHEL-14289, which had to add a
+          # private semanage_exec_t type just so selinux-autorelabel.service
+          # itself could run under mls):
+          #   - systemd_selinux_autorelabel_generator_t denied `execute`
+          #     on shell_exec_t (can't even exec bash)
+          #   - several *_generator_t domains (getty, sysv, factory-reset)
+          #     denied `write` on kmsg_device_t:s15 -- a genuine mls BLP
+          #     "no write up" constraint, since these domains run at the
+          #     low end (s0) of their s0-s15 range by default
+          # Mark just these specific domains permissive (logged, not
+          # blocked) purely to see what -- if anything -- is left once
+          # they're out of the way; this is a diagnostic probe, not a
+          # real fix (a real fix belongs in selinux-policy's systemd
+          # module, not here).
+          semanage permissive -a systemd_selinux_autorelabel_generator_t
+          semanage permissive -a systemd_factory_reset_generator_t
+          semanage permissive -a systemd_getty_generator_t
+          semanage permissive -a systemd_sysv_generator_t
+
           sed -i 's/^SELINUX=.*/SELINUX=enforcing/' /etc/selinux/config
 
           # Force a full, fresh local -> init -> config -> final cloud-init
