@@ -38,13 +38,20 @@ description: |
     own sysnet_manage_config_sockets() interface), `setgid` (dropping to
     the `adm` group before writing command-output logs) is a distinct
     capability from the ones already granted, and `systemd-detect-virt`'s
-    container check needs nsfs file getattr. One denial
-    (`storage_raw_read_fixed_disk()` hitting a raw block device labeled
-    s15 while cloud_init_t runs at s0) looks like a genuine MLS BLP "no
-    read up" constraint rather than a missing TE rule, and is
-    intentionally left alone pending a separate decision on whether
-    cloud-init's disk-growing modules should be trusted readers under MLS
-    at all.
+    container check needs nsfs file getattr.
+
+    `storage_raw_read_fixed_disk()` hitting a raw block device labeled
+    s15 while cloud_init_t runs at s0 turned out to be a genuine MLS BLP
+    "no read up" constraint (`mlsconstrain`), not a missing TE rule --
+    `audit2allow`'s suggested `allow` for it is a no-op, since the
+    constraint check is independent of and in addition to normal TE
+    rules. The fourth pass makes the deliberate call to fix this: growpart
+    (cc_growpart.py, run in cloud_init_t itself since it has no dedicated
+    domain) legitimately needs to read the raw disk to grow the root
+    filesystem regardless of its labeled sensitivity, so cloud_init_t is
+    declared MLS-trusted for file reads at all levels via
+    `mls_file_read_all_levels()` -- the first domain in the tree to use
+    that attribute.
 
 prepare:
   - name: Install and configure MLS policy in Permissive mode
