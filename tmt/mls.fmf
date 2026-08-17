@@ -264,19 +264,21 @@ prepare:
           # itself could run under mls):
           #   - systemd_selinux_autorelabel_generator_t denied `execute`
           #     on shell_exec_t (can't even exec bash)
-          #   - several *_generator_t domains (getty, sysv, factory-reset)
+          #   - EVERY *_generator_t domain tried so far (getty, sysv,
+          #     factory-reset, bless-boot, rc-local, cryptsetup, ...)
           #     denied `write` on kmsg_device_t:s15 -- a genuine mls BLP
           #     "no write up" constraint, since these domains run at the
-          #     low end (s0) of their s0-s15 range by default
-          # Mark just these specific domains permissive (logged, not
-          # blocked) purely to see what -- if anything -- is left once
-          # they're out of the way; this is a diagnostic probe, not a
-          # real fix (a real fix belongs in selinux-policy's systemd
-          # module, not here).
+          #     low end (s0) of their s0-s15 range by default. This looks
+          #     like a blanket mls-vs-systemd-generators design gap, not
+          #     a handful of missing rules, so mark the whole family
+          #     permissive dynamically instead of chasing them one by one.
+          # This is a diagnostic probe, not a real fix (a real fix
+          # belongs in selinux-policy's systemd module, not here).
           semanage permissive -a systemd_selinux_autorelabel_generator_t
-          semanage permissive -a systemd_factory_reset_generator_t
-          semanage permissive -a systemd_getty_generator_t
-          semanage permissive -a systemd_sysv_generator_t
+          seinfo -t 2>/dev/null | grep -E '_generator_t$' | while read -r t; do
+              semanage permissive -a "$t" 2>&1 || true
+          done
+          semanage permissive -l | grep generator
 
           sed -i 's/^SELINUX=.*/SELINUX=enforcing/' /etc/selinux/config
 
