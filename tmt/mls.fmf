@@ -640,6 +640,31 @@ prepare:
           systemctl daemon-reload
           systemctl enable mls-udev-diag.service
 
+          # Follow-up after 6030357b: pointing the non-root mounts at the
+          # raw /dev/nvme0n1p3 device (instead of its by-uuid symlink)
+          # didn't help -- the timeout target just became
+          # dev-nvme0n1p3.device itself, so this was never about by-uuid
+          # symlink creation specifically. It's the systemd *device unit*
+          # for that partition never becoming "ready" a second time in the
+          # main OS's freshly-started udevd, even though the very same
+          # partition is already mounted as root (via the initrd's udevd,
+          # which doesn't carry state across switch-root). Add a live
+          # monitor (mls-udev-monitor.service) that runs `udevadm monitor
+          # --kernel --udev` for the whole boot -- this shows directly
+          # whether the kernel ever re-emits a uevent for nvme0n1p3 in the
+          # main OS, and separately whether udev ever finishes processing
+          # it -- plus, once we're past the point where it's already known
+          # to be stuck (t+45s), an active `udevadm trigger`/`udevadm
+          # settle` probe and a dump of the udev device DB (/run/udev/data)
+          # and its labels, per the theory that this is a udev-worker/
+          # device-DB-communication issue under MLS rather than a classic
+          # missing-TE-rule gap (already ruled out via mls_file_read_all_levels
+          # + the policy/mls constraint review, see below).
+          cp $TMT_TREE/tmt/mls-cloudinit-fix/mls-udev-monitor.service \
+              /etc/systemd/system/mls-udev-monitor.service
+          systemctl daemon-reload
+          systemctl enable mls-udev-monitor.service
+
           sed -i 's/^SELINUX=.*/SELINUX=enforcing/' /etc/selinux/config
 
           # New evidence from the udevadm-diagnostic run: every enforcing
@@ -667,19 +692,24 @@ prepare:
           # least afford it.
           rm -f /.autorelabel
 
-          # Also dial back the probe step's diagnostic verbosity for
-          # this real attempt: dontaudit-off + SYSTEMD_LOG_LEVEL=debug
-          # udevd + journald-forward-to-console already had two full
-          # rounds (the permissive probe and the first enforcing/60s-timeout
-          # run) to surface a udev/NIC/disk denial and found nothing --
-          # so they're no longer buying diagnostic value, only paying for
-          # it in synchronous console-write overhead stacked on top of
-          # whatever the relabel above was also doing. Keep
-          # audit_backlog_limit (cheap, no console I/O) and the
-          # mls-udev-diag.service probe (bounded, already proven fast).
-          semanage dontaudit on
-          rm -f /etc/systemd/system/systemd-udevd.service.d/99-debug.conf
-          rm -f /etc/systemd/journald.conf.d/99-diag-console.conf
+          # Previously (7d7eabf4) this dialed dontaudit/debug logging back
+          # off here, since two earlier rounds found nothing and the extra
+          # console I/O was itself a suspected contributor to instability.
+          # Since then the stale-relabel bug got fixed (confirmed gone in
+          # 04bf1a50's run) and NetworkManager-wait-online was cleared as a
+          # red herring (it stalls but never blocks anything) -- so this is
+          # a meaningfully cleaner baseline than either of those "found
+          # nothing" rounds. Worth one more look with full diagnostics on,
+          # specifically per the theory that this is a socket/netlink or
+          # udev-worker-communication denial that a plain permissive probe
+          # wouldn't reproduce (permissive doesn't actually retry/backoff
+          # the way a real enforcing-mode block does): keep dontaudit off
+          # and udevd debug logging live through the actual enforcing
+          # attempt this time, instead of reverting to defaults beforehand.
+          semanage dontaudit off
+          echo "=== confirm debug configs are still in place for this attempt ==="
+          ls -la /etc/systemd/system/systemd-udevd.service.d/99-debug.conf \
+                 /etc/systemd/journald.conf.d/99-diag-console.conf 2>&1 || true
           systemctl daemon-reload
 
           # Force a full, fresh local -> init -> config -> final cloud-init
