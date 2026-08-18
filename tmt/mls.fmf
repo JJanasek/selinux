@@ -593,6 +593,46 @@ prepare:
 
           sed -i 's/^SELINUX=.*/SELINUX=enforcing/' /etc/selinux/config
 
+          # New evidence from the udevadm-diagnostic run: every enforcing
+          # attempt so far -- captured this time with a complete (not
+          # console-only) boot log -- shows selinux-autorelabel.service
+          # deciding *another* full "SELinux mls policy relabel is
+          # required" run is needed and starting `fixfiles -T 0 restore`
+          # at ~t=6.5s, with no "Finished" line anywhere in the rest of
+          # the captured boot (i.e. it may still be running, competing
+          # for I/O on the very same nvme0n1p3 device the stuck by-uuid
+          # symlink lives on, when everything else times out at t=64s).
+          # /.autorelabel should have been consumed by the very first
+          # relabel boot (several steps ago) and never reappear; check
+          # its state now, while SSH still works, so this is visible
+          # regardless of whether the upcoming enforcing boot succeeds:
+          echo "=== is /.autorelabel still present before the enforcing boot? (it shouldn't be) ==="
+          ls -la /.autorelabel 2>&1 || echo "/.autorelabel absent, as expected"
+          echo "=== did the original relabel service actually finish successfully? ==="
+          systemctl status selinux-autorelabel.service --no-pager -l 2>&1 || true
+          # Whatever the cause, defensively clear it: the system has been
+          # functioning correctly under permissive this whole time
+          # (cloud-init, policy queries, the earlier probe all worked),
+          # so a further full relabel buys nothing and only adds
+          # unpredictable I/O load right when the enforcing boot can
+          # least afford it.
+          rm -f /.autorelabel
+
+          # Also dial back the probe step's diagnostic verbosity for
+          # this real attempt: dontaudit-off + SYSTEMD_LOG_LEVEL=debug
+          # udevd + journald-forward-to-console already had two full
+          # rounds (the permissive probe and the first enforcing/60s-timeout
+          # run) to surface a udev/NIC/disk denial and found nothing --
+          # so they're no longer buying diagnostic value, only paying for
+          # it in synchronous console-write overhead stacked on top of
+          # whatever the relabel above was also doing. Keep
+          # audit_backlog_limit (cheap, no console I/O) and the
+          # mls-udev-diag.service probe (bounded, already proven fast).
+          semanage dontaudit on
+          rm -f /etc/systemd/system/systemd-udevd.service.d/99-debug.conf
+          rm -f /etc/systemd/journald.conf.d/99-diag-console.conf
+          systemctl daemon-reload
+
           # Force a full, fresh local -> init -> config -> final cloud-init
           # run under enforcing on the next boot (see the "Reset cloud-init's
           # per-instance state" comment in the first prepare step -- without
