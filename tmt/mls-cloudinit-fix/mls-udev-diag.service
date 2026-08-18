@@ -25,6 +25,10 @@ ExecStart=/bin/sh -c '\
     echo "=== mls-udev-diag: udevadm test, dry-run full rule eval (bounded 60s) ==="; \
     timeout 60 udevadm test "$devpath" 2>&1; \
     echo "=== mls-udev-diag: test exit=$? ==="; \
+    echo "=== mls-udev-diag: watchdog device check (chasing the ~5min forced-reboot cadence) ==="; \
+    ls -la /dev/watchdog* 2>&1; \
+    dmesg 2>&1 | grep -iE "watchdog|wdt" ; \
+    command -v wdctl >/dev/null 2>&1 && wdctl 2>&1 ; \
     echo "=== mls-udev-diag: done ==="'
 
 [Install]
