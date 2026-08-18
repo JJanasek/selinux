@@ -390,6 +390,21 @@ prepare:
           # guessed at from a rate-limited console dump.
           dnf install -y dhcp-client
 
+          # glibc's %transfiletriggerin fires ldconfig on *any* rpm
+          # transaction that touches /usr/lib{,64} or /etc/ld.so.conf.d,
+          # which the dnf install above does -- so it just rewrote
+          # /etc/ld.so.cache with a brand new inode. The forced relabel
+          # in the previous prepare step (prepare_for_mls_force_relabel)
+          # ran *before* this, so it never touched this new inode, and
+          # the file falls back to inheriting /etc's own etc_t type
+          # instead of ld_so_cache_t -- reproducing the exact same "map
+          # denied" boot hang that step was supposed to have fixed for
+          # good. One file, so a plain restorecon (no -F needed: a
+          # freshly-created file has no stale user/role/range to fix,
+          # only the type) is enough here.
+          restorecon -v /etc/ld.so.cache
+          ls -Z /etc/ld.so.cache
+
           cp $TMT_TREE/tmt/mls-cloudinit-fix/diagnostic-network.service \
               /etc/systemd/system/diagnostic-network.service
 
