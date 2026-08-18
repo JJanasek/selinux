@@ -171,13 +171,19 @@ description: |
     `--timeout` (single-dash `-timeout` is rejected as "Unknown
     command"). That cascaded into a multi-user.target dependency failure
     right as cloud-init was trying to finish, which is what actually kept
-    tmt from ever getting a stable reconnect. Fixed the flag. Given the
-    disk/NIC path visibly worked fine on its own this whole time, the
-    real fix for the original hang looks like it was already the
-    ld.so.cache/generator/nofail work above -- the udev-bypass escape
-    hatch itself may no longer be needed at all, and is currently the
-    only thing left actively breaking this boot; keeping it for one more
-    run (now with the flag fixed) to confirm before ripping it out.
+    tmt from ever getting a stable reconnect.     Fixed the flag and reran: the escape hatch failed a *second*,
+    different way (`ip link set "" up`: its own /sys/class/net
+    device-probe loop came up empty even though ens5 had already been
+    up and DHCP-configured normally for 25+ seconds by then), still
+    with the same underlying pattern -- multi-user.target and a real
+    login prompt reached first, broken only once cloud-init's `ssh`
+    module restarted sshd and pulled the escape hatch in. Two
+    independent enforcing-mode boots now agree that disk/NIC/udev work
+    correctly on their own, and that the escape hatch is the only thing
+    still breaking the boot, so it's removed for good: the real fix
+    for the original hang was already the ld.so.cache/generator/nofail
+    work above, and this diagnostic-only workaround outlived its
+    purpose once that landed.
 
 prepare:
   - name: Install and configure MLS policy in Permissive mode
@@ -522,55 +528,23 @@ prepare:
           # dependency at all -- it may just be waiting forever to be told
           # by udev that the NIC exists.
           #
-          # Chasing each individually-blocking unit is a losing game, and
-          # there's also no interactive console available here to log in
-          # locally once the guest lands in emergency mode -- only a
-          # passive console-log tail and tmt's own SSH reconnection. So
-          # instead, bypass udev and NetworkManager for networking
-          # entirely, using only /sys/class/net (populated directly by the
-          # kernel driver as soon as it probes the NIC, independent of
-          # udev) plus a raw DHCP client, and give sshd its own escape
-          # hatch to start as soon as that's up (`DefaultDependencies=no`
-          # skips the implicit `After=/Requires=basic.target` every normal
-          # service gets, which is what's actually stuck). None of this
-          # fixes the underlying udev bug; it's purely a diagnostic
-          # workaround to reach a live shell so the real blocking AVC(s)
-          # can finally be captured with ausearch/journalctl instead of
-          # guessed at from a rate-limited console dump.
-          dnf install -y dhcp-client
-
-          # glibc's %transfiletriggerin fires ldconfig on *any* rpm
-          # transaction that touches /usr/lib{,64} or /etc/ld.so.conf.d,
-          # which the dnf install above does -- so it just rewrote
-          # /etc/ld.so.cache with a brand new inode. The forced relabel
-          # in the previous prepare step (prepare_for_mls_force_relabel)
-          # ran *before* this, so it never touched this new inode, and
-          # the file falls back to inheriting /etc's own etc_t type
-          # instead of ld_so_cache_t -- reproducing the exact same "map
-          # denied" boot hang that step was supposed to have fixed for
-          # good. One file, so a plain restorecon (no -F needed: a
-          # freshly-created file has no stale user/role/range to fix,
-          # only the type) is enough here.
-          restorecon -v /etc/ld.so.cache
-          ls -Z /etc/ld.so.cache
-
-          cp $TMT_TREE/tmt/mls-cloudinit-fix/diagnostic-network.service \
-              /etc/systemd/system/diagnostic-network.service
-
-          # Reset After=/Wants= to empty first: a systemd override *adds*
-          # to a list directive already declared by the vendor unit
-          # rather than replacing it, so without this, sshd.service's own
-          # existing `After=network.target sshd-keygen.target` (or
-          # similar) would still apply, potentially reintroducing the
-          # exact wait we're trying to remove.
-          mkdir -p /etc/systemd/system/sshd.service.d
-          cp $TMT_TREE/tmt/mls-cloudinit-fix/sshd-diagnostic-escape-hatch.conf \
-              /etc/systemd/system/sshd.service.d/diagnostic-escape-hatch.conf
-
-          systemctl daemon-reload
-          systemctl enable diagnostic-network.service
-          systemctl mask NetworkManager.service
-
+          # Chasing each individually-blocking unit looked like a losing
+          # game at the time, so this step used to also bypass udev and
+          # NetworkManager for networking entirely (a raw dhclient run
+          # from /sys/class/net, plus a dependency-free sshd override) to
+          # reach a live shell no matter what. That escape hatch is gone
+          # now: the permissive probe step above proved udev/NIC/disk
+          # already work correctly under mls (dontaudit off, zero
+          # relevant denials, the by-uuid symlink created in ~11s), and
+          # two separate enforcing-mode runs since then independently
+          # confirmed it live -- both reached multi-user.target,
+          # cloud-init.target, and a real `login:` prompt with ens5 up
+          # over plain DHCP, entirely through the normal boot path,
+          # *before* anything ever touched the escape hatch. The escape
+          # hatch itself was the only thing left actually breaking the
+          # boot by that point (a bad dhclient flag the first time, an
+          # empty-interface race the second), so removing it is the
+          # actual fix, not just cleanup.
           sed -i 's/^SELINUX=.*/SELINUX=enforcing/' /etc/selinux/config
 
           # Force a full, fresh local -> init -> config -> final cloud-init
@@ -587,8 +561,8 @@ prepare:
     how: shell
     script: |
       if [ "${TEST_ENFORCING:-1}" = "1" ]; then
-          echo "=== did the diagnostic networking/sshd escape hatch actually work? ==="
-          systemctl status diagnostic-network.service sshd.service --no-pager 2>&1 || true
+          echo "=== did sshd/networking come up normally this boot? ==="
+          systemctl status sshd.service --no-pager 2>&1 || true
           ip addr show 2>&1 || true
 
           echo "=== did local-fs.target / basic.target / multi-user.target fail again this boot? ==="
