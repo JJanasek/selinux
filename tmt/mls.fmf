@@ -99,6 +99,21 @@ description: |
     (`audit_backlog_limit=8192`, up from the kernel default of 64), then
     inspects the loaded policy and captured denials directly.
 
+    `nofail` alone got further (local-fs.target/sysinit.target were
+    actually reached this time) but still wasn't enough: other services
+    (systemd-logind, chronyd, ...) directly require var.mount/home.mount
+    regardless of local-fs.target, and NetworkManager.service separately
+    hung for its own ~11-minute internal timeout -- plausibly because it
+    discovers interfaces via a udev monitor and never got told the NIC
+    exists, same as the disk symlinks. There's also no interactive
+    console available to log in locally once the guest lands in
+    emergency mode, only a passive console-log tail. So this plan now
+    bypasses udev and NetworkManager for networking entirely (using only
+    /sys/class/net, populated directly by the kernel driver, plus a raw
+    dhclient) and gives sshd its own dependency-free path to start, purely
+    to reach a live shell and finally capture the real blocking AVC(s)
+    with ausearch instead of guessing from console output.
+
 prepare:
   - name: Install and configure MLS policy in Permissive mode
     how: shell
@@ -340,6 +355,78 @@ prepare:
           echo "=== confirm audit_backlog_limit landed on the default boot entry ==="
           grubby --info=DEFAULT | grep args
 
+          # Even with the fstab mounts made survivable above, the very next
+          # boot still never got tmt's SSH connection back: local-fs.target
+          # and sysinit.target *did* get reached this time (real progress --
+          # confirms the nofail fix works), but basic.target/multi-user.target
+          # still failed, because specific services (systemd-logind,
+          # chronyd, ...) directly require var.mount/home.mount rather than
+          # going through local-fs.target, and separately NetworkManager.service
+          # itself hung for its own ~11-minute internal timeout. Even the
+          # *root* filesystem's own by-uuid symlink -- already mounted and
+          # in active use -- never got (re-)created post-switch_root, which
+          # is why this looks like systemd-udevd's whole event-processing
+          # path is stuck, not something storage/blkid-specific (unrelated
+          # devices like /dev/ttyS0 and /dev/zram0 time out identically).
+          # NetworkManager itself discovers interfaces via a udev monitor,
+          # so it's plausible it's not blocked by any *specific* unmet
+          # dependency at all -- it may just be waiting forever to be told
+          # by udev that the NIC exists.
+          #
+          # Chasing each individually-blocking unit is a losing game, and
+          # there's also no interactive console available here to log in
+          # locally once the guest lands in emergency mode -- only a
+          # passive console-log tail and tmt's own SSH reconnection. So
+          # instead, bypass udev and NetworkManager for networking
+          # entirely, using only /sys/class/net (populated directly by the
+          # kernel driver as soon as it probes the NIC, independent of
+          # udev) plus a raw DHCP client, and give sshd its own escape
+          # hatch to start as soon as that's up (`DefaultDependencies=no`
+          # skips the implicit `After=/Requires=basic.target` every normal
+          # service gets, which is what's actually stuck). None of this
+          # fixes the underlying udev bug; it's purely a diagnostic
+          # workaround to reach a live shell so the real blocking AVC(s)
+          # can finally be captured with ausearch/journalctl instead of
+          # guessed at from a rate-limited console dump.
+          dnf install -y dhcp-client
+
+          cat > /etc/systemd/system/diagnostic-network.service <<'EOF'
+[Unit]
+Description=Diagnostic escape hatch: bring up networking without udev/NetworkManager
+DefaultDependencies=no
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c 'for i in $(seq 1 30); do dev=$(ls /sys/class/net | grep -v ^lo$ | head -1); [ -n "$dev" ] && break; sleep 1; done; echo "using device: $dev"; ip link set "$dev" up; dhclient -1 -timeout 30 -v "$dev"'
+
+[Install]
+WantedBy=sysinit.target
+EOF
+
+          # Reset After=/Wants= to empty first: a systemd override *adds*
+          # to a list directive already declared by the vendor unit
+          # rather than replacing it, so without this, sshd.service's own
+          # existing `After=network.target sshd-keygen.target` (or
+          # similar) would still apply, potentially reintroducing the
+          # exact wait we're trying to remove.
+          mkdir -p /etc/systemd/system/sshd.service.d
+          cat > /etc/systemd/system/sshd.service.d/diagnostic-escape-hatch.conf <<'EOF'
+[Unit]
+After=
+Wants=
+Requires=
+DefaultDependencies=no
+After=diagnostic-network.service sysinit.target
+Wants=diagnostic-network.service
+Conflicts=shutdown.target
+Before=shutdown.target
+EOF
+
+          systemctl daemon-reload
+          systemctl enable diagnostic-network.service
+          systemctl mask NetworkManager.service
+
           sed -i 's/^SELINUX=.*/SELINUX=enforcing/' /etc/selinux/config
 
           # Force a full, fresh local -> init -> config -> final cloud-init
@@ -356,9 +443,14 @@ prepare:
     how: shell
     script: |
       if [ "${TEST_ENFORCING:-1}" = "1" ]; then
-          echo "=== did local-fs.target actually fail again this boot? ==="
-          systemctl status local-fs.target --no-pager 2>&1 || true
+          echo "=== did the diagnostic networking/sshd escape hatch actually work? ==="
+          systemctl status diagnostic-network.service sshd.service --no-pager 2>&1 || true
+          ip addr show 2>&1 || true
+
+          echo "=== did local-fs.target / basic.target / multi-user.target fail again this boot? ==="
+          systemctl status local-fs.target basic.target multi-user.target --no-pager 2>&1 || true
           systemctl list-jobs 2>&1 || true
+          systemctl --failed --no-pager 2>&1 || true
 
           echo "=== restore fstab (nofail was diagnostic-only) ==="
           if [ -f /etc/fstab.pre-nofail-probe ]; then
