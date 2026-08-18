@@ -114,6 +114,38 @@ description: |
     to reach a live shell and finally capture the real blocking AVC(s)
     with ausearch instead of guessing from console output.
 
+    That escape hatch reached sshd.service ("Started sshd.service"), but
+    the raw dhclient bring-up it depends on failed too -- its own
+    device-probe loop over /sys/class/net never found a non-loopback
+    interface within 30s, so sshd had no route and stayed unreachable.
+    The guest then just sat in this broken state until Testing Farm's own
+    infrastructure-level watchdog force-rebooted it (repeating in a clean
+    ~5.5-minute cycle, confirmed by diffing four consecutive console-log
+    boot segments with byte-identical failure signatures), until tmt's
+    own `tmt-reboot -t 1200` budget ran out and the plan errored with
+    `RebootTimeoutError`.
+
+    Before escalating further on the enforcing-mode side (console-only
+    visibility, no live shell, 5-6 minutes per iteration), a cheaper
+    experiment first: redo the *permissive*-mode boot (SSH stays up, so
+    `ausearch` is available directly, no rate-limited-console guessing)
+    but this time with `semanage dontaudit off` and the higher
+    `audit_backlog_limit` active from before boot, plus debug-level
+    logging enabled for systemd-udevd specifically
+    (`SYSTEMD_LOG_LEVEL=debug` via a service drop-in). If the enforcing
+    hang were caused by a normal TE gap, permissive mode would already
+    have logged it (just not blocked it) in every prior successful
+    permissive run -- it never did. Two explanations survive that: either
+    the missing denial is hidden by a `dontaudit` rule (invisible in
+    *both* modes, hence `dontaudit off` here), or this isn't an
+    audit-visible permission check at all but a genuine non-SELinux
+    systemd/udev-vs-MLS-range interaction (hence the debug logging, which
+    doesn't depend on AVCs existing). A `journald` forward-to-console
+    drop-in is also staged now (harmless under permissive, since we have
+    SSH there anyway) so that if this probe comes back empty, the very
+    next enforcing attempt automatically gets the same visibility on the
+    console without needing another round-trip to add it.
+
 prepare:
   - name: Install and configure MLS policy in Permissive mode
     how: shell
@@ -277,6 +309,84 @@ prepare:
 
       echo "=== /etc/ld.so.cache context after the forced relabel ==="
       ls -Z /etc/ld.so.cache
+
+  - name: Probe for udev/NIC AVCs under permissive with dontaudit off
+    how: shell
+    script: |
+      if [ ! -f /root/.mls-permissive-udev-probe-done ]; then
+          touch /root/.mls-permissive-udev-probe-done
+
+          # Every successful *permissive*-mode boot so far (including the
+          # relabel boot right before this step) already exercised the
+          # exact same disk mounts and NIC probing that hang under
+          # enforcing, and never logged a single udev/disk/NIC-related
+          # denial -- permissive mode logs every denial it *would* have
+          # blocked, so a normal missing-TE-rule gap would already be
+          # visible here. It never has been. `dontaudit off` rebuilds the
+          # loaded policy with dontaudit rules disabled, which is the one
+          # thing that stays invisible in *both* permissive and enforcing
+          # mode alike -- so if there's a suppressed denial hiding behind
+          # one of those, this is the only way to see it without going
+          # through another 5-6-minute enforcing-mode console-only round
+          # trip. Safe to run now: the mls store is already the live
+          # kernel policy (loaded permissive by the reboot before this),
+          # so the implicit rebuild+reload this triggers applies to a
+          # policy the kernel is already running under, not a mismatched
+          # one (see the semodule -n note in the earlier build step for
+          # why that distinction matters).
+          semanage dontaudit off
+
+          # Same audit_backlog_limit fix as the later enforcing step,
+          # just moved earlier so this probe boot benefits from it too --
+          # otherwise a burst of early-boot AVCs could still get dropped
+          # from the backlog before auditd drains them, independent of
+          # dontaudit.
+          grubby --update-kernel=ALL --args="audit_backlog_limit=8192"
+
+          # SYSTEMD_LOG_LEVEL=debug specifically for systemd-udevd (not
+          # systemd itself, to avoid drowning everything else in noise):
+          # covers the case this isn't a permission check at all but a
+          # udev-side bug that only manifests as MLS ranges/categories
+          # (e.g. failing to compute a worker or device-node context,
+          # silently retrying/hanging instead of erroring) -- which
+          # `ausearch` can never show since no avc_has_perm() call would
+          # even happen. journald's forward-to-console is staged here too
+          # (inert under permissive, since SSH already works) so the
+          # *next* enforcing attempt gets the same visibility for free if
+          # this probe comes back empty.
+          mkdir -p /etc/systemd/system/systemd-udevd.service.d
+          cp $TMT_TREE/tmt/mls-cloudinit-fix/systemd-udevd-debug.conf \
+              /etc/systemd/system/systemd-udevd.service.d/99-debug.conf
+          mkdir -p /etc/systemd/journald.conf.d
+          cp $TMT_TREE/tmt/mls-cloudinit-fix/journald-forward-console.conf \
+              /etc/systemd/journald.conf.d/99-diag-console.conf
+          systemctl daemon-reload
+
+          tmt-reboot -t 300
+      else
+          echo "=== confirm dontaudit rules are actually gone from the loaded policy ==="
+          echo "dontaudit rule count (should be ~0, not the stock policy's several thousand):"
+          sesearch --dontaudit 2>&1 | wc -l || true
+
+          echo "=== sanity: did this fresh boot reach multi-user/network fine under permissive? ==="
+          systemctl is-system-running 2>&1 || true
+          ip addr show 2>&1 || true
+          ls -la /dev/disk/by-uuid/ 2>&1 || true
+
+          echo "=== full AVC/USER_AVC list, this (dontaudit-off) boot ==="
+          ausearch -m AVC,USER_AVC -ts boot 2>&1 || echo "no AVCs at all this boot"
+
+          echo "=== filtered: anything touching udev/NIC/module/device machinery ==="
+          ausearch -m AVC,USER_AVC -ts boot 2>&1 \
+              | grep -iE 'udev|nic|netif|module|kernel_t|net_device|rawip|tun_socket|ethernet|virtio|ena_|eth0|ens[0-9]|zram|blk_file|fixed_disk|disk_device' \
+              || echo "none found -- this isn't a normal (or dontaudit-suppressed) TE/mlsconstrain denial"
+
+          echo "=== systemd-udevd debug journal for this boot (SYSTEMD_LOG_LEVEL=debug) ==="
+          journalctl -b -u systemd-udevd --no-pager -o short-monotonic 2>&1 || true
+
+          echo "=== udev trigger/settle activity this boot ==="
+          journalctl -b -u 'systemd-udev*' --no-pager -o short-monotonic 2>&1 || true
+      fi
 
   - name: Switch to Enforcing and reboot again (tests acceptance criterion 1 for real)
     how: shell
