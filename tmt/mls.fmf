@@ -140,11 +140,44 @@ description: |
     *both* modes, hence `dontaudit off` here), or this isn't an
     audit-visible permission check at all but a genuine non-SELinux
     systemd/udev-vs-MLS-range interaction (hence the debug logging, which
-    doesn't depend on AVCs existing). A `journald` forward-to-console
+    doesn't depend on AVCs existing).     A `journald` forward-to-console
     drop-in is also staged now (harmless under permissive, since we have
     SSH there anyway) so that if this probe comes back empty, the very
     next enforcing attempt automatically gets the same visibility on the
     console without needing another round-trip to add it.
+
+    The probe came back empty: `sesearch --dontaudit` confirmed the
+    rebuild actually dropped every dontaudit rule (0, down from several
+    thousand), and the only udev_t/kernel_t hits in the full,
+    dontaudit-off `ausearch` dump are ordinary process-transition noise
+    (siginh/rlimitinh/noatsecure) from `systemctl restart
+    systemd-udevd` -- nothing resembling a blocked disk/NIC access. The
+    debug-level systemd-udevd journal confirms why: it loads the SELinux
+    database, reads every rule file, and creates the
+    `/dev/disk/by-uuid/...` symlink for the root filesystem in ~11s,
+    with no errors. So this was never a normal (or dontaudit-hidden)
+    missing-rule/mlsconstrain denial.
+
+    The very next enforcing attempt then showed the same thing for the
+    first time directly: it reached multi-user.target, cloud-init.target,
+    and a real `login:` prompt with ens5 configured over plain DHCP --
+    all *before* hitting any escape-hatch machinery at all. It only broke
+    later, when cloud-init's `ssh` config module (predictably) issued its
+    own `systemctl restart sshd.service`; because the earlier escape-hatch
+    override made sshd.service's dependencies point at
+    diagnostic-network.service, that restart pulled that unit in for the
+    first time all boot, and it failed outright: its dhclient invocation
+    passed `-timeout 30`, but this dhclient build only recognizes
+    `--timeout` (single-dash `-timeout` is rejected as "Unknown
+    command"). That cascaded into a multi-user.target dependency failure
+    right as cloud-init was trying to finish, which is what actually kept
+    tmt from ever getting a stable reconnect. Fixed the flag. Given the
+    disk/NIC path visibly worked fine on its own this whole time, the
+    real fix for the original hang looks like it was already the
+    ld.so.cache/generator/nofail work above -- the udev-bypass escape
+    hatch itself may no longer be needed at all, and is currently the
+    only thing left actively breaking this boot; keeping it for one more
+    run (now with the flag fixed) to confirm before ripping it out.
 
 prepare:
   - name: Install and configure MLS policy in Permissive mode
@@ -313,9 +346,13 @@ prepare:
   - name: Probe for udev/NIC AVCs under permissive with dontaudit off
     how: shell
     script: |
-      if [ ! -f /root/.mls-permissive-udev-probe-done ]; then
-          touch /root/.mls-permissive-udev-probe-done
-
+      # TMT_REBOOT_COUNT is scoped to this prepare phase alone (tmt hands
+      # each phase its own counter, reset to 0 on entry, and re-runs just
+      # this phase's script -- not the whole plan -- after handling the
+      # requested reboot), so this is enough to request the reboot
+      # exactly once and run the diagnostics below only after it, with no
+      # separate marker file needed.
+      if [ "${TMT_REBOOT_COUNT:-0}" -eq 0 ]; then
           # Every successful *permissive*-mode boot so far (including the
           # relabel boot right before this step) already exercised the
           # exact same disk mounts and NIC probing that hang under
@@ -395,9 +432,11 @@ prepare:
       # step's forced relabel should have fixed the root cause of the
       # hang this step used to reproduce -- flip it off again if it
       # regresses without wanting to burn 20 minutes on every run).
-      if [ "${TEST_ENFORCING:-1}" = "1" ] && [ ! -f /root/.mls-enforcing-switch-done ]; then
-          touch /root/.mls-enforcing-switch-done
-
+      # TMT_REBOOT_COUNT is its own fresh, phase-scoped counter (see the
+      # note in the probe step above), so -eq 0 here only guards *this*
+      # phase's own reboot, independent of the reboot the probe step
+      # above already took.
+      if [ "${TEST_ENFORCING:-1}" = "1" ] && [ "${TMT_REBOOT_COUNT:-0}" -eq 0 ]; then
           # The ld.so.cache fix above cleared that denial, but the very
           # next enforcing boot then hung on a *different*, pre-existing
           # gap in the stock mls policy's systemd module -- unrelated to
