@@ -501,7 +501,7 @@ prepare:
           #     guarantees ausearch can find them later, regardless of
           #     what did or didn't make it to the console.
           cp /etc/fstab /etc/fstab.pre-nofail-probe
-          awk '!/^#/ && NF >= 4 && $3 != "swap" { $4 = $4",nofail,x-systemd.device-timeout=10" } { print }' \
+          awk '!/^#/ && NF >= 4 && $3 != "swap" { $4 = $4",nofail,x-systemd.device-timeout=60" } { print }' \
               /etc/fstab.pre-nofail-probe > /etc/fstab
           echo "=== /etc/fstab after adding nofail (diagnostic only) ==="
           cat /etc/fstab
@@ -532,19 +532,34 @@ prepare:
           # game at the time, so this step used to also bypass udev and
           # NetworkManager for networking entirely (a raw dhclient run
           # from /sys/class/net, plus a dependency-free sshd override) to
-          # reach a live shell no matter what. That escape hatch is gone
-          # now: the permissive probe step above proved udev/NIC/disk
-          # already work correctly under mls (dontaudit off, zero
-          # relevant denials, the by-uuid symlink created in ~11s), and
-          # two separate enforcing-mode runs since then independently
-          # confirmed it live -- both reached multi-user.target,
-          # cloud-init.target, and a real `login:` prompt with ens5 up
-          # over plain DHCP, entirely through the normal boot path,
-          # *before* anything ever touched the escape hatch. The escape
-          # hatch itself was the only thing left actually breaking the
-          # boot by that point (a bad dhclient flag the first time, an
-          # empty-interface race the second), so removing it is the
-          # actual fix, not just cleanup.
+          # reach a live shell no matter what. That escape hatch itself
+          # turned out to be buggy (a bad dhclient flag, then an
+          # empty-interface race) and broke two runs on its own, so it's
+          # gone now -- both of those runs otherwise reached
+          # multi-user.target, cloud-init.target, and a real `login:`
+          # prompt with ens5 up over plain DHCP before ever touching it,
+          # confirming NIC/network bring-up itself is fine. Removing it
+          # was a real fix, just not *the* fix: a follow-up run without
+          # the escape hatch still hung, with a much sharper signature
+          # now that the escape-hatch noise is gone -- home.mount,
+          # boot.mount, boot-efi.mount, and var.mount (every non-root
+          # fstab entry) fail every single cycle because their
+          # /dev/disk/by-uuid/<uuid>.device units time out at exactly
+          # the 10s x-systemd.device-timeout set below, while the root
+          # filesystem (mounted from the initrd, before fstab/udev-by-uuid
+          # is even involved) is fine, and sshd.service *does* start
+          # successfully around t=60s regardless -- tmt's reconnect still
+          # never succeeds, though, so something about that half-booted
+          # state (no /home, no /var, no /boot) still isn't enough.
+          # Since the permissive probe found the same by-uuid symlink
+          # (for the root partition, granted) created in ~11s with zero
+          # relevant denials, this may just be a timing cliff rather than
+          # a hard block. Nothing else has changed here since the last
+          # round of iteration; the very next thing to try is raising
+          # x-systemd.device-timeout well past 10s to see whether the
+          # non-root by-uuid symlinks eventually do show up (confirming a
+          # slowness/serialization issue, not a denial) or never do
+          # (pointing back to a real, still-uncaptured AVC).
           sed -i 's/^SELINUX=.*/SELINUX=enforcing/' /etc/selinux/config
 
           # Force a full, fresh local -> init -> config -> final cloud-init
