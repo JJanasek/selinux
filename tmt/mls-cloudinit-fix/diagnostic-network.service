@@ -1,0 +1,11 @@
+[Unit]
+Description=Diagnostic escape hatch: bring up networking without udev/NetworkManager
+DefaultDependencies=no
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c 'for i in $(seq 1 30); do dev=$(ls /sys/class/net | grep -v ^lo$ | head -1); [ -n "$dev" ] && break; sleep 1; done; echo "using device: $dev"; ip link set "$dev" up; dhclient -1 -timeout 30 -v "$dev"'
+
+[Install]
+WantedBy=sysinit.target

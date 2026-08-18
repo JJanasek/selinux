@@ -390,19 +390,8 @@ prepare:
           # guessed at from a rate-limited console dump.
           dnf install -y dhcp-client
 
-          cat > /etc/systemd/system/diagnostic-network.service <<'EOF'
-[Unit]
-Description=Diagnostic escape hatch: bring up networking without udev/NetworkManager
-DefaultDependencies=no
-
-[Service]
-Type=oneshot
-RemainAfterExit=yes
-ExecStart=/bin/sh -c 'for i in $(seq 1 30); do dev=$(ls /sys/class/net | grep -v ^lo$ | head -1); [ -n "$dev" ] && break; sleep 1; done; echo "using device: $dev"; ip link set "$dev" up; dhclient -1 -timeout 30 -v "$dev"'
-
-[Install]
-WantedBy=sysinit.target
-EOF
+          cp $TMT_TREE/tmt/mls-cloudinit-fix/diagnostic-network.service \
+              /etc/systemd/system/diagnostic-network.service
 
           # Reset After=/Wants= to empty first: a systemd override *adds*
           # to a list directive already declared by the vendor unit
@@ -411,17 +400,8 @@ EOF
           # similar) would still apply, potentially reintroducing the
           # exact wait we're trying to remove.
           mkdir -p /etc/systemd/system/sshd.service.d
-          cat > /etc/systemd/system/sshd.service.d/diagnostic-escape-hatch.conf <<'EOF'
-[Unit]
-After=
-Wants=
-Requires=
-DefaultDependencies=no
-After=diagnostic-network.service sysinit.target
-Wants=diagnostic-network.service
-Conflicts=shutdown.target
-Before=shutdown.target
-EOF
+          cp $TMT_TREE/tmt/mls-cloudinit-fix/sshd-diagnostic-escape-hatch.conf \
+              /etc/systemd/system/sshd.service.d/diagnostic-escape-hatch.conf
 
           systemctl daemon-reload
           systemctl enable diagnostic-network.service
