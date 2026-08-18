@@ -553,13 +553,44 @@ prepare:
           # state (no /home, no /var, no /boot) still isn't enough.
           # Since the permissive probe found the same by-uuid symlink
           # (for the root partition, granted) created in ~11s with zero
-          # relevant denials, this may just be a timing cliff rather than
-          # a hard block. Nothing else has changed here since the last
-          # round of iteration; the very next thing to try is raising
-          # x-systemd.device-timeout well past 10s to see whether the
-          # non-root by-uuid symlinks eventually do show up (confirming a
-          # slowness/serialization issue, not a denial) or never do
-          # (pointing back to a real, still-uncaptured AVC).
+          # relevant denials, the obvious next thing to try was raising
+          # x-systemd.device-timeout (below) well past 10s -- but that
+          # ruled the timing-cliff theory out: even at 60s, the exact
+          # same single by-uuid device (41a21019..., which turns out to
+          # be the *root* filesystem's own UUID -- home/boot/var are
+          # plain fstab entries pointing at the same btrfs device, not
+          # genuinely separate partitions) never appears, every cycle,
+          # confirmed against the *complete* enforcing-boot console
+          # output this time (not console-only guessing): no new AVCs
+          # anywhere near it even with dontaudit still off and
+          # audit_backlog_limit=8192 from the probe step, and static
+          # policy review confirms udev_t already carries
+          # mls_file_read_all_levels/mls_file_write_all_levels/
+          # mls_process_write_down, and the base mls policy's own
+          # constraint file (policy/mls) explicitly includes blk_file in
+          # the same "read/getattr/execute" mlsconstrain that
+          # mlsfileread exempts, and exempts ioctl/lock entirely -- so
+          # this isn't a missing-rule gap in the classic sense; udev_t
+          # is already about as trusted as a domain can be for exactly
+          # this kind of raw-device read. That means the block (if it's
+          # SELinux-related at all) is happening somewhere `ausearch`
+          # can't see, or it isn't an SELinux permission problem at all
+          # but a genuine udev/blkid hang specific to MLS labels. Staged
+          # a live diagnostic (mls-udev-diag.service, DefaultDependencies=no
+          # so it doesn't wait on the very mounts it's investigating) that
+          # runs `udevadm test-builtin blkid` and `udevadm test` directly
+          # against the root partition's sysfs device early in this boot,
+          # each bounded by `timeout 60`, with output forced to the
+          # console (the debug journald-forward-to-console config from
+          # the earlier probe step is still active) -- this should show
+          # directly whether the blkid builtin call succeeds, errors, or
+          # hangs, without needing SSH at all.
+          mkdir -p /etc/systemd/system
+          cp $TMT_TREE/tmt/mls-cloudinit-fix/mls-udev-diag.service \
+              /etc/systemd/system/mls-udev-diag.service
+          systemctl daemon-reload
+          systemctl enable mls-udev-diag.service
+
           sed -i 's/^SELINUX=.*/SELINUX=enforcing/' /etc/selinux/config
 
           # Force a full, fresh local -> init -> config -> final cloud-init

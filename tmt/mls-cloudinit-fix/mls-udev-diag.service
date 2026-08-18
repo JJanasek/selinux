@@ -1,0 +1,31 @@
+[Unit]
+Description=Diagnostic: directly probe udev/blkid rule processing for the root device under mls
+DefaultDependencies=no
+Before=sysinit.target
+After=systemd-udevd.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+StandardOutput=journal+console
+StandardError=journal+console
+TimeoutStartSec=180
+ExecStart=/bin/sh -c '\
+    name=$(ls /sys/class/block/ 2>/dev/null | grep "p3$" | head -1); \
+    devpath="/sys/class/block/$name"; \
+    echo "=== mls-udev-diag: target sysfs device: $devpath ==="; \
+    ls -laZ "$devpath" 2>&1; \
+    echo "=== mls-udev-diag: raw node context ==="; \
+    ls -laZ "/dev/$name" 2>&1; \
+    echo "=== mls-udev-diag: ps -eZ (who is running right now) ==="; \
+    ps -eZ 2>&1; \
+    echo "=== mls-udev-diag: udevadm test-builtin blkid (bounded 60s) ==="; \
+    timeout 60 udevadm test-builtin blkid "$devpath" 2>&1; \
+    echo "=== mls-udev-diag: test-builtin exit=$? ==="; \
+    echo "=== mls-udev-diag: udevadm test, dry-run full rule eval (bounded 60s) ==="; \
+    timeout 60 udevadm test "$devpath" 2>&1; \
+    echo "=== mls-udev-diag: test exit=$? ==="; \
+    echo "=== mls-udev-diag: done ==="'
+
+[Install]
+WantedBy=sysinit.target
