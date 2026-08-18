@@ -501,9 +501,58 @@ prepare:
           #     guarantees ausearch can find them later, regardless of
           #     what did or didn't make it to the console.
           cp /etc/fstab /etc/fstab.pre-nofail-probe
+
+          # New (04bf1a50 follow-up): a fresh enforcing run with the
+          # watchdog probe confirmed two things with sharper evidence
+          # than before. First, /dev/watchdog* doesn't exist on this
+          # guest at all ("No such file or directory" from both `ls`
+          # and `wdctl`) -- the ~5-minute external reboot cadence seen
+          # throughout this investigation is *not* a guest-visible
+          # hardware/software watchdog, it's coming from outside the
+          # guest OS entirely (infrastructure-level, invisible to tmt
+          # and to us). Second, the by-uuid hang is still exactly what
+          # blocks multi-user.target every cycle, deterministically,
+          # completely independent of the separate ~2min
+          # NetworkManager-wait-online slowness (which resolves on its
+          # own and never blocks anything, since network-online.target
+          # only Wants it, not Requires it).
+          #
+          # Rather than just widening the by-uuid timeout again (60s
+          # already didn't help), bypass udev's by-uuid symlink
+          # resolution for these mounts entirely: home/var/boot are
+          # plain fstab entries on the *same* underlying block device
+          # as the already-mounted root filesystem (confirmed earlier
+          # -- they share one UUID, root is just several btrfs
+          # subvolumes), so the raw partition device node is already
+          # known to the kernel the moment it's partitioned/enumerated
+          # and doesn't need udev to (re-)probe it by UUID at all. If
+          # udev's per-device blkid/symlink pipeline is what's actually
+          # stalling under enforcing (everything gathered so far points
+          # there: the coldplug trigger itself finishes in under a
+          # second every boot, but the resulting by-uuid symlink still
+          # isn't there 60s later), skipping that pipeline for these
+          # mounts should let them come up as fast as root itself does.
+          # Resolve while still permissive, when blkid/findmnt are known
+          # to work fine, so this can't itself become a chicken-and-egg
+          # problem once enforcing is live.
+          while read -r uuid; do
+              [ -z "$uuid" ] && continue
+              dev=$(blkid -U "$uuid" 2>/dev/null || true)
+              if [ -n "$dev" ]; then
+                  echo "resolved UUID=$uuid -> $dev, rewriting fstab"
+                  sed -i "s#UUID=$uuid#$dev#g" /etc/fstab
+              else
+                  echo "WARNING: could not resolve UUID=$uuid via blkid, leaving as UUID= (nofail/timeout below still applies)"
+              fi
+          done < <(awk '!/^#/ && NF >= 4 && $3 != "swap" && $1 ~ /^UUID=/ { sub(/^UUID=/, "", $1); print $1 }' /etc/fstab.pre-nofail-probe | sort -u)
+
+          # Keep nofail + a device-timeout as a safety net regardless
+          # (covers any entry that didn't resolve above, and just
+          # generally keeps a stuck mount from hard-blocking boot).
+          cp /etc/fstab /etc/fstab.pre-nofail-probe2
           awk '!/^#/ && NF >= 4 && $3 != "swap" { $4 = $4",nofail,x-systemd.device-timeout=60" } { print }' \
-              /etc/fstab.pre-nofail-probe > /etc/fstab
-          echo "=== /etc/fstab after adding nofail (diagnostic only) ==="
+              /etc/fstab.pre-nofail-probe2 > /etc/fstab
+          echo "=== /etc/fstab after UUID->raw-device rewrite + nofail (diagnostic only) ==="
           cat /etc/fstab
 
           grubby --update-kernel=ALL --args="audit_backlog_limit=8192"
