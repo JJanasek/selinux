@@ -465,13 +465,43 @@ prepare:
           # mode alike -- so if there's a suppressed denial hiding behind
           # one of those, this is the only way to see it without going
           # through another 5-6-minute enforcing-mode console-only round
-          # trip. Safe to run now: the mls store is already the live
-          # kernel policy (loaded permissive by the reboot before this),
-          # so the implicit rebuild+reload this triggers applies to a
-          # policy the kernel is already running under, not a mismatched
-          # one (see the semodule -n note in the earlier build step for
-          # why that distinction matters).
-          semanage dontaudit off
+          # trip.
+          #
+          # IMPORTANT (new, matches the class of bug already root-caused
+          # for `semanage permissive -a` above/below -- see the eb2ade08
+          # comment near the udev_t/NetworkManager_t permissive calls):
+          # `semanage dontaudit off` without `--noreload`/`-N` does an
+          # immediate rebuild-and-reload of the whole mls store into the
+          # live kernel, right here, followed within a handful of lines by
+          # this exact step's own `tmt-reboot` -- a real, hard reboot of
+          # the guest. Every single run through eb2ade08 (7 in a row:
+          # 2fc81438/517da82d/8886d239/6148f7ed/0a61c365/97baa9ee/37e1e883)
+          # died the same way, immediately after *this* step hands back to
+          # tmt: "bash: /root/.bashrc: Permission denied" plus an rsync
+          # mkstemp EACCES pushing the *next* step's script over the
+          # freshly-reestablished SSH session. A live diagnostic pass
+          # right after that reboot (id -Z, on-disk labels/modes for the
+          # failing paths, pam_namespace/namespace.conf, the full mount
+          # table) found nothing actually broken -- context was a normal
+          # root:staff_r:staff_t:s0-s15:c0.c1023, /root and /root/.bashrc
+          # had ordinary correct labels/modes, no polyinstantiation is
+          # even configured (every namespace.conf directive is stock-
+          # commented-out), and root could freely write to both /root and
+          # /var/ARTIFACTS moments before the very next push failed the
+          # same way. That points at a timing/ordering bug, not a
+          # persistent state problem: if the reboot below fires while the
+          # `dontaudit off` rebuild+reload triggered here is still
+          # finishing in the background (plausible under mls's much
+          # larger c0.c1023 category space than targeted/mcs), the on-disk
+          # store or some semanage-managed file could be left mid-write,
+          # which would only show up as a downstream oddity on the very
+          # next boot -- exactly where every one of those 7 runs actually
+          # failed. `-N` defers the reload to the next policy load
+          # (i.e. this same imminent reboot) instead of doing it live,
+          # the same fix already proven for `semanage permissive -a`
+          # elsewhere in this plan, and it's free here since the reboot
+          # is the very next thing this step does anyway.
+          semanage dontaudit -N off
 
           # Same audit_backlog_limit fix as the later enforcing step,
           # just moved earlier so this probe boot benefits from it too --
@@ -848,7 +878,11 @@ prepare:
           # the way a real enforcing-mode block does): keep dontaudit off
           # and udevd debug logging live through the actual enforcing
           # attempt this time, instead of reverting to defaults beforehand.
-          semanage dontaudit off
+          # Deferred with -N for the same reason as the Probe step's own
+          # `semanage dontaudit -N off` above: this phase's `tmt-reboot`
+          # (into enforcing, no less) is still ahead, so there's no need
+          # to risk a live reload racing against it.
+          semanage dontaudit -N off
           echo "=== confirm debug configs are still in place for this attempt ==="
           ls -la /etc/systemd/system/systemd-udevd.service.d/99-debug.conf \
                  /etc/systemd/journald.conf.d/99-diag-console.conf 2>&1 || true
