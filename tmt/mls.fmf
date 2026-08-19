@@ -237,6 +237,22 @@ description: |
     udev diagnostics are retired (kept in mls-cloudinit-fix/ for
     reference, no longer enabled) to free up console bandwidth for it.
 
+    Ran it (Testing Farm eb2f649e): the loopback self-connect to sshd
+    succeeded on every one of 20+ iterations spanning the full 5-minute
+    window, so sshd itself accepting connections was never in question.
+    But the same diagnostic's `ip route show`/`ip -4 addr show` came back
+    essentially empty, and `ss`/`systemctl` calls in the very same run
+    failed outright ("Cannot open netlink socket: Permission denied",
+    "Failed to retrieve unit state: Access denied" with an explicit
+    `scon=initrc_t tcon=init_t ... perm=status ... Permission denied").
+    A plain ad hoc systemd service with no configured label lands in
+    initrc_t under mls, which the stock policy doesn't grant
+    NETLINK_ROUTE-socket or systemd-status-query access to -- so the
+    "empty" routing table this round is most likely the diagnostic being
+    blind under MLS, not proof the route table is actually empty. Marked
+    initrc_t permissive (same pattern as the generator-domain probe
+    earlier) so the next run's numbers can actually be trusted.
+
 prepare:
   - name: Install and configure MLS policy in Permissive mode
     how: shell
@@ -808,6 +824,28 @@ prepare:
               /etc/systemd/system/mls-net-diag.service
           systemctl daemon-reload
           systemctl enable mls-net-diag.service
+
+          # Ran it (Testing Farm eb2f649e): the loopback self-connect
+          # answered (c) immediately -- sshd accepts on 127.0.0.1:22
+          # every single one of 20+ iterations across the full 5-minute
+          # window, so sshd itself is fine. But `ip route show` came back
+          # completely empty and `ip -4 addr show` showed only lo, which
+          # would seem to confirm theory (a) (no route/address at all) --
+          # except the *same* boot's console also shows the diagnostic's
+          # own `ss`/`systemctl` calls failing outright ("Cannot open
+          # netlink socket: Permission denied", "Failed to retrieve unit
+          # state: Access denied", the latter with an explicit
+          # `scon=initrc_t tcon=init_t ... perm=status ... Permission
+          # denied`). A plain ad hoc systemd service with no configured
+          # label lands in initrc_t under mls, which the stock policy
+          # doesn't grant NETLINK_ROUTE socket or systemd-status query
+          # access to -- so the empty `ip route`/`ip addr` output is (most
+          # likely) this diagnostic being blind, not evidence the route
+          # table is actually empty. Mark initrc_t permissive for this
+          # probe only (same pattern already used for the generator-domain
+          # probe above) so the *next* run's mls-net-diag.service output
+          # can actually be trusted either way.
+          semanage permissive -a initrc_t
 
           # Force a full, fresh local -> init -> config -> final cloud-init
           # run under enforcing on the next boot (see the "Reset cloud-init's
