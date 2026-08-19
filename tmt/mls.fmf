@@ -115,6 +115,21 @@ prepare:
           rm -f /.autorelabel
           systemctl mask selinux-autorelabel.service
 
+          # udev's by-uuid symlinks for every non-root mount on this guest
+          # (home/var/boot/boot-efi) are unreliable under a freshly enforcing
+          # mls kernel and can time out, taking local-fs.target down with
+          # them (a dead end: emergency mode has no sshd and a locked root).
+          # The raw partition device nodes themselves are already known to
+          # the kernel without any udev involvement, so resolve each fstab
+          # UUID to its raw device now, while still permissive and blkid is
+          # known to work.
+          cp /etc/fstab /etc/fstab.orig
+          awk '!/^#/ && NF >= 4 && $3 != "swap" && $1 ~ /^UUID=/ { sub(/^UUID=/, "", $1); print $1 }' \
+              /etc/fstab.orig | sort -u | while read -r uuid; do
+              dev=$(blkid -U "$uuid" 2>/dev/null) && [ -n "$dev" ] && \
+                  sed -i "s#UUID=$uuid#$dev#g" /etc/fstab
+          done
+
           # Raise the audit backlog so early-boot AVCs survive to be read
           # by the verification step below instead of being dropped once
           # the kernel's default 64-entry backlog fills.
