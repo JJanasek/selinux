@@ -135,6 +135,13 @@ prepare:
           awk '!/^#/ && NF >= 4 && $3 != "swap" { $4 = $4",nofail,x-systemd.device-timeout=90" } { print }' \
               /etc/fstab.rewritten > /etc/fstab
 
+          # udev_t/NetworkManager_t's own MLS range/category computation
+          # overhead is the leading theory for that device-processing
+          # slowness; -n defers the reload to the imminent reboot instead
+          # of hot-loading into NetworkManager's own live session.
+          semanage permissive -n -a udev_t
+          semanage permissive -n -a NetworkManager_t
+
           # Raise the audit backlog so early-boot AVCs survive to be read
           # by the verification step below instead of being dropped once
           # the kernel's default 64-entry backlog fills.
