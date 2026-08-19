@@ -24,8 +24,29 @@ StandardError=journal+console
 # state (nft/firewalld, in case a deny-by-default ruleset loads before
 # its allow-ssh rule), the actual listening-socket table, and a
 # loopback self-connect to confirm sshd itself accepts connections
-# regardless of what happens to external routing.
+# regardless of what happens to external routing. `ip addr show` alone
+# can't tell "interface doesn't exist" from "interface exists but is
+# down/unconfigured" -- b5719bd8 found NetworkManager never once logs
+# discovering ens5 at all in the main OS (only "(lo): new Loopback
+# device"), so the first iteration also dumps `ip link show` (lists
+# every netdev the kernel knows about, up or down, unlike `addr show`),
+# a raw /sys/class/net listing (kernel-level ground truth, independent
+# of udev/NetworkManager entirely), and udevadm's own view of ens5 (does
+# udev have a database entry/uevent for it at all in this boot) --
+# together these separate "the netdev genuinely vanished at the kernel
+# level after switch-root" from "the netdev exists but udev/NetworkManager
+# never picked it up".
 ExecStart=/bin/sh -c '\
+    echo "=== mls-net-diag: one-time kernel/udev ground truth for the network interface ==="; \
+    echo "--- ip link show (every netdev the kernel knows about, up or down) ---"; \
+    ip link show 2>&1; \
+    echo "--- /sys/class/net/ (kernel-level ground truth, independent of udev/NM) ---"; \
+    ls -la /sys/class/net/ 2>&1; \
+    echo "--- udevadm info for ens5 (does udev have a db entry/uevent record for it?) ---"; \
+    udevadm info --query=all --name=ens5 2>&1; \
+    echo "--- NetworkManager device list (nmcli, if present) ---"; \
+    command -v nmcli >/dev/null 2>&1 && nmcli device status 2>&1; \
+    echo "=== mls-net-diag: end one-time ground truth, starting periodic loop ==="; \
     i=0; \
     while [ "$i" -lt 20 ]; do \
         echo "=== mls-net-diag: iteration $i (t~$(( i * 15 ))s after unit start) ==="; \

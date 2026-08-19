@@ -847,6 +847,53 @@ prepare:
           # can actually be trusted either way.
           semanage permissive -a initrc_t
 
+          # Ran it again (Testing Farm b5719bd8) with initrc_t now
+          # permissive, so this round's mls-net-diag output can finally be
+          # trusted: `ip -4 -o addr show`/`ip route show` came back
+          # completely empty (lo only) across all 20 iterations spanning
+          # the whole 5-minute window -- not blind this time (no new
+          # netlink-related AVCs), so the guest genuinely has no non-loopback
+          # address or route at all, confirming theory (a) for real.
+          #
+          # Cross-referencing the full console log (not just mls-net-diag's
+          # own output) found the actual mechanism, and it's bigger than a
+          # missing route: dev-nvme0n1p2.device AND dev-nvme0n1p3.device
+          # *both* still time out every boot (contradicting the "fixed for
+          # real" note above -- that was one lucky run, not a real fix), but
+          # boot now survives it because nothing hard-requires them. More
+          # importantly, dev-ttyS0.device and dev-zram0.device -- a serial
+          # console and an in-memory swap device, nothing to do with disks,
+          # blkid, or nvme at all -- *also* time out in the exact same
+          # ~45-second window right after systemd-udevd starts, during which
+          # udevd's own debug log (systemd-udevd.service.d/99-debug.conf)
+          # shows zero device/worker activity whatsoever. That rules out an
+          # nvme- or blkid-specific bug: this is udev's coldplug event
+          # processing stalling *system-wide*, for every device type, for
+          # ~45-65s immediately after udevd starts, on every single
+          # enforcing boot. Most device units happen to survive it (their
+          # dependents tolerate the delay or the timeout isn't fatal to
+          # boot), but the network interface does not: the kernel brings up
+          # `ena 0000:00:05.0` and renames it to ens5 exactly once, during
+          # the initrd stage (~t=5.9s, before switch-root, which is also
+          # when cloud-init's initrd-stage network bring-up briefly gives it
+          # 172.31.19.49 to fetch instance metadata) -- but NetworkManager
+          # in the *main* OS, for the entire boot, only ever logs "(lo): new
+          # Loopback device" and never once logs discovering ens5 at all.
+          # No AVC (permissive or enforcing, dontaudit already off) implicates
+          # udev_t or NetworkManager_t specifically, so this doesn't look like
+          # a classic missing-TE-rule gap either -- but that doesn't rule out
+          # a dontaudit-independent enforcement path (e.g. a slow/blocked
+          # avc_has_perm() computation under MLS's s0-s15:c0.c1023 range that
+          # never generates a denial because the operation isn't actually
+          # denied, just pathologically delayed). Mark both permissive, same
+          # pattern as initrc_t above, to test that theory directly: if the
+          # coldplug stall and/or ens5 discovery clear up with these
+          # permissive, that's strong evidence MLS-specific SID/context
+          # computation overhead for these two heavily-invoked domains is the
+          # real mechanism, not a discrete missing rule.
+          semanage permissive -a udev_t
+          semanage permissive -a NetworkManager_t
+
           # Force a full, fresh local -> init -> config -> final cloud-init
           # run under enforcing on the next boot (see the "Reset cloud-init's
           # per-instance state" comment in the first prepare step -- without
