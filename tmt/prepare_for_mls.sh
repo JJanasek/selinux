@@ -64,9 +64,44 @@
 # has to live in a call/step that only actually executes post-reboot).
 
 prepare_for_mls_configure() {
-    semanage login -m -s sysadm_u root
-
+    # IMPORTANT: SELINUXTYPE must be switched to mls *before* the semanage
+    # login mapping below, not after. `semanage` always operates on whatever
+    # store /etc/selinux/config's SELINUXTYPE currently names -- it has no
+    # awareness of which policy the *kernel* is actually running, but it very
+    # much cares what this file says at the moment it's invoked. Running the
+    # login mapping first (as this used to do) silently writes "root ->
+    # sysadm_u" into the still-active *targeted* store's login database,
+    # never touching mls's own (separate) one at all. The mls store's own
+    # stock default then applies instead: root lands as the distinct "root"
+    # SELinux user's *first* listed role, which resolves to staff_r/staff_t,
+    # not sysadm_r/sysadm_t.
+    #
+    # Confirmed via the permissive-mode dontaudit-off probe: every root SSH
+    # session after the switch to mls reports `id -Z` =
+    # root:staff_r:staff_t:s0-s15:c0.c1023, and permissive-but-logged AVCs
+    # show staff_t denied `read`/`open` on /root/.bashrc (admin_home_t) and
+    # denied `write`/`create`/`rename` on the tmt workdir tree (var_t) --
+    # exactly the operations tmt's own rsync-based script push depends on.
+    # Under permissive these are merely logged and everything still works,
+    # which is why every earlier permissive-mode boot in this investigation
+    # looked completely healthy. The very first real *enforcing* boot after
+    # the "Switch to Enforcing" step's own reboot hits these for real:
+    # tmt's reconnect-and-push cycle dies immediately with
+    # "bash: /root/.bashrc: Permission denied" and an rsync mkstemp EACCES
+    # under the workdir tree -- both a byte-for-byte match for the denials
+    # already logged (harmlessly) under permissive. This is exactly the
+    # "works under permissive, breaks under enforcing" signature of a real
+    # enforced AVC, not a coincidental non-SELinux bug: staff_t is
+    # deliberately a more confined role than sysadm_t under mls (regular
+    # admin-track users are meant to `newrole` up to sysadm_r for real
+    # administration), so it was never going to have blanket admin_home_t/
+    # var_t access -- root just never actually got mapped to sysadm_u in the
+    # store that matters. Fixed by reordering: set SELINUXTYPE=mls first, so
+    # the login mapping below lands in the correct (mls) store, and root
+    # actually gets sysadm_u/sysadm_r/sysadm_t once the switch takes effect.
     sed -i 's/^SELINUXTYPE=.*/SELINUXTYPE=mls/' /etc/selinux/config
+
+    semanage login -m -s sysadm_u root
 
     touch /.autorelabel
 }

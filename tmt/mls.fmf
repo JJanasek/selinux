@@ -253,6 +253,32 @@ description: |
     initrc_t permissive (same pattern as the generator-domain probe
     earlier) so the next run's numbers can actually be trusted.
 
+    Every run since then died a different way: right after the "Switch to
+    Enforcing" step's own reboot (the first boot where SELinux actually
+    enforces mls for real), tmt's very next reconnect-and-push cycle failed
+    outright with "bash: /root/.bashrc: Permission denied" and an rsync
+    mkstemp EACCES under the tmt workdir tree -- initially misread as a
+    Testing Farm rsync/infra flake (it recurred identically across five
+    separate runs: 2fc81438, 517da82d, 8886d239, 6148f7ed, 0a61c365, and
+    again as 97baa9ee even after ruling out live-policy-reload disruption
+    as the cause). The real explanation was already sitting in the
+    permissive probe's own dontaudit-off AVC dump, just never scrutinized
+    closely enough: `root:staff_r:staff_t` (not the intended sysadm_u/
+    sysadm_r/sysadm_t) denied `read`/`open` on /root/.bashrc
+    (admin_home_t) and denied `write`/`create`/`rename` on the workdir
+    tree (var_t) -- logged-but-allowed under permissive (which is exactly
+    why every earlier permissive boot in this whole investigation looked
+    completely healthy), and a byte-for-byte match for what breaks for
+    real the instant enforcing is live. Root cause: prepare_for_mls.sh's
+    prepare_for_mls_configure() ran `semanage login -m -s sysadm_u root`
+    *before* switching SELINUXTYPE to mls, so the mapping silently landed
+    in the still-active targeted store instead of mls's own; mls's stock
+    default then took over instead, landing root in staff_r/staff_t (a
+    deliberately more confined role that was never going to have blanket
+    admin_home_t/var_t access) instead of the intended sysadm_r/sysadm_t.
+    Fixed by reordering those two lines (see prepare_for_mls.sh) so the
+    login mapping lands in the correct (mls) store.
+
 prepare:
   - name: Install and configure MLS policy in Permissive mode
     how: shell
