@@ -1111,7 +1111,48 @@ prepare:
           # provisioned and skip everything).
           cloud-init clean --logs
 
-          tmt-reboot -t 1200
+          # IMPORTANT: this specific reboot -- the one that actually flips
+          # the kernel from permissive to *enforcing* for real -- kept
+          # failing tmt's own post-reboot reconnect check with a bare,
+          # uncaught `AssertionError` inside tmt itself (tmt/guest/
+          # __init__.py's BootMarkBootTime.fetch(): `assert stdout` on the
+          # output of `cat /proc/stat`), reproduced deterministically across
+          # four separate Testing Farm runs (099cfd5b's own validation:
+          # cbcaa1b7/5255007c/516aa7fe/57df8eac), always at this exact step,
+          # never at the earlier "Reboot to apply MLS and Relabel" or
+          # "Probe" steps' own tmt-reboot calls. Evidence gathered directly
+          # from each run's tmt-run debug log: tmt's very first post-reboot
+          # poll (fixed 30s after the reboot command returns) sometimes gets
+          # a clean, expected SSH connection failure (rc 255, correctly
+          # retried) but *just as often* gets `cat /proc/stat` reporting
+          # success (rc 0) with zero bytes of stdout -- root-caused as the
+          # poll's SSH command landing on the *old, pre-reboot* sshd session
+          # in the narrow window while it's already being torn down by the
+          # plain `reboot`/systemd shutdown sequence (which stops sshd only
+          # partway through, not first): the remote `cat` process gets
+          # killed by the shutdown before it can write anything or before
+          # sshd can relay a real exit-status message, and OpenSSH's client
+          # falls back to reporting a bare "channel closed" as exit 0 rather
+          # than surfacing the interruption -- which tmt's own `assert
+          # stdout` (only guards against RunError, not this exit-0-but-empty
+          # case) doesn't handle. Console log cross-reference confirms this
+          # timing is physically impossible to be a genuine *new*,
+          # fully-booted enforcing session that fast: sshd doesn't even
+          # start until well past 130s into a fresh boot in every captured
+          # console log, but tmt's very first poll landing on this ambiguous
+          # state fires at just +30s.
+          #
+          # Can't patch tmt itself, so work around it here: use `-c` to
+          # replace the default bare `reboot` with a detached
+          # (setsid + disowned, so *our own* ssh channel for this command
+          # still returns cleanly and immediately) sequence that stops sshd
+          # outright *before* triggering the actual reboot. That turns the
+          # ambiguous "old session dying mid-command" window into a plain,
+          # unambiguous connection-refused for any poll that lands early --
+          # exactly the case tmt's own `except tmt.utils.RunError` already
+          # retries correctly -- instead of the empty-stdout-but-success
+          # case it doesn't.
+          tmt-reboot -t 1200 -c "setsid sh -c 'sleep 1; systemctl stop sshd.service; sleep 1; systemctl reboot' </dev/null >/dev/null 2>&1 &"
       fi
 
   - name: Investigate the enforcing-boot disk-by-uuid timeout (udev/blkid MLS theory)
