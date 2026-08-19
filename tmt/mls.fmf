@@ -279,6 +279,50 @@ description: |
     Fixed by reordering those two lines (see prepare_for_mls.sh) so the
     login mapping lands in the correct (mls) store.
 
+    Confirmed fixed by three separate Testing Farm runs after a5c7dfde
+    (7055660d, a1724108, 34499498, 68ed863b, 75a93cfe): the "bash:
+    /root/.bashrc: Permission denied" / rsync mkstemp EACCES failure that
+    blocked every single run for the previous week is completely gone --
+    every step through "Probe for udev/NIC AVCs" now passes reliably, and
+    the very first real-enforcing-mode SSH session (post the "Switch to
+    Enforcing" step's own reboot) works correctly. That confirms the
+    original hypothesis in full: this whole class of failure really was a
+    real, enforced AVC (root landing in the wrong, more confined SELinux
+    role), invisible under permissive, blocking for real the instant
+    enforcing went live -- not a coincidental non-SELinux bug.
+
+    A new, *different* blocker now appears at exactly the same spot, three
+    times in a row (34499498, 68ed863b, 75a93cfe): tmt's own reboot-polling
+    logic crashes ~30-32s after the "Switch to Enforcing" step's tmt-reboot
+    is issued, with "Plugin raised an unhandled exception" and a traceback
+    bottoming out in tmt/guest/__init__.py's BootMarkBootTime.fetch():
+    `assert stdout` failing because stdout is the empty string. This is a
+    tmt/OpenSSH ControlMaster reliability gap, not an SELinux or mls.fmf
+    problem: tmt's reboot-detection poll (`cat /proc/stat`, checked every
+    30s) apparently can, at least right after issuing a real `reboot`,
+    successfully open a channel on the still-cached multiplexed SSH
+    connection and get back a clean exit 0 with *no output at all* instead
+    of either real content or a clear connection failure -- and tmt's own
+    boot-mark code has no defensive handling for that transient case, so
+    it crashes the whole plan instead of just treating it as "reboot not
+    detected yet, keep waiting" (which is exactly what happens 30s earlier
+    and, presumably, would happen 30s later if given the chance). Notably
+    this exact `tmt-reboot` mechanism has worked flawlessly, every single
+    time, for the *other* reboots in this same plan (Relabel step, Probe
+    step) across dozens of runs -- so whatever's different about this one
+    specific reboot (the first one that actually flips SELINUX=enforcing,
+    though the *shutdown* half still runs under the still-live, still-
+    permissive old session) needs more evidence before concluding it's
+    mls-specific rather than environmental. Next step: retry enough times
+    to tell whether this is genuinely deterministic here or just an
+    unlucky short streak, and if deterministic, consider a workaround at
+    the tmt-reboot call site (e.g. a custom reboot command that guarantees
+    the SSH channel itself closes before the actual reboot(8) syscall
+    fires, so a stale multiplexed channel can't produce a false "success")
+    rather than a tmt upstream patch, since this whole investigation
+    treats a5c7dfde's login mapping bug as the actual root cause this plan
+    was chasing.
+
 prepare:
   - name: Install and configure MLS policy in Permissive mode
     how: shell
