@@ -1,446 +1,66 @@
-summary: MLS Policy Investigation Plan
+summary: MLS Policy Enforcing-Mode Boot Validation
 description: |
-    The initial problem was thought to be an infrastructure limitation
-    preventing MLS policy testing. However, experimentation has shown that
-    the issue lies within the selinux-policy itself, specifically with
-    missing rules for cloud-init in the MLS policy.
+    Validates that a Fedora guest can be switched from the default
+    (targeted) SELinux policy to mls and boot to a working SSH session in
+    real enforcing mode (acceptance criterion 1), with cloud-init and
+    networking both working normally under mls's stricter constraints.
 
-    A candidate fix lives on JJanasek/selinux-policy@mls-enable-cloud-init
-    (https://github.com/JJanasek/selinux-policy/pull/new/mls-enable-cloud-init):
-    it enables the cloudform module for the mls policy store. Since
-    cloudform doesn't exist in the stock mls store at all yet, this plan
-    builds it as a standalone third-party module with the standard
-    `/usr/share/selinux/devel/Makefile` workflow (the same one
-    `policycoreutils-devel` documents for building a single module against
-    whatever policy is actually installed) and adds it to the guest's live
-    mls store with `semodule -i`, before relabeling/rebooting, so we can
-    confirm the fix clears the cloud-init AVC denials. The module's source
-    files (cloudform.te/if/fc plus the new NetworkManager and ssh
-    interfaces) are checked into this plan under mls-cloudinit-fix/,
-    mirroring the fork commits, so the build has no runtime dependency on
-    GitHub.
+    Two local policy modules fix gaps in the stock mls policy that this
+    plan depends on and that Fedora's shipped mls build doesn't cover yet:
 
-    The first pass of this fix only added NetworkManager/net_conf rules
-    and got cloud-init transitioning into cloud_init_t for the first time
-    (previously it silently ran unconfined as init_t, because cloudform.te
-    relies on `unconfined_domain(cloud_init_t)` for targeted/mcs, which
-    isn't enabled under mls). That surfaced a much larger set of small,
-    previously-invisible gaps in cloudform.te's own ruleset -- dhcpcd pid/
-    signal handling, systemd unit-file status queries, udev trigger/settle,
-    ssh host key reads and ~/.ssh management, shadow reads for the
-    set-passwords module, and locale/timezone file management -- which
-    the second pass adds. A third pass, after re-running with only the
-    prior two passes' rules and diffing the fresh denial set, closes three
-    more boot-to-boot-variable gaps that hadn't shown up in every run:
-    cloud-init's own stage-synchronization sockets under
-    /run/cloud-init/share/*.sock are a distinct sock_file object class
-    from the plain files sysnet_manage_config() already covers (needs its
-    own sysnet_manage_config_sockets() interface), `setgid` (dropping to
-    the `adm` group before writing command-output logs) is a distinct
-    capability from the ones already granted, and `systemd-detect-virt`'s
-    container check needs nsfs file getattr.
+    - cloudform (mls-cloudinit-fix/): grants cloud-init the file, socket,
+      and capability access it needs to run confined as cloud_init_t under
+      mls, instead of relying on the targeted-only unconfined_domain()
+      escape hatch mls doesn't have. Also declares cloud_init_t
+      mls_file_read_all_levels(), since growing the root filesystem
+      legitimately needs to read the raw disk device regardless of its
+      labeled sensitivity. Developed against
+      JJanasek/selinux-policy@mls-enable-cloud-init.
+    - mlssshpipes (mls-ssh-pipes-fix/): backports
+      fedora-selinux/selinux-policy commit a589b1b5 (fixing
+      fedora-selinux/selinux-policy#3286), not yet in
+      selinux-policy-mls-44.6-1.fc44. Without it, sysadm_t (root's login
+      domain under mls) can't read/write the pipes OpenSSH's
+      privilege-separated sshd-session hands a login shell as stdin/
+      stdout, so command output never makes it back over SSH once mls is
+      actually enforcing.
 
-    `storage_raw_read_fixed_disk()` hitting a raw block device labeled
-    s15 while cloud_init_t runs at s0 turned out to be a genuine MLS BLP
-    "no read up" constraint (`mlsconstrain`), not a missing TE rule --
-    `audit2allow`'s suggested `allow` for it is a no-op, since the
-    constraint check is independent of and in addition to normal TE
-    rules. The fourth pass makes the deliberate call to fix this: growpart
-    (cc_growpart.py, run in cloud_init_t itself since it has no dedicated
-    domain) legitimately needs to read the raw disk to grow the root
-    filesystem regardless of its labeled sensitivity, so cloud_init_t is
-    declared MLS-trusted for file reads at all levels via
-    `mls_file_read_all_levels()` -- the first domain in the tree to use
-    that attribute.
+    Both are checked into this plan as standalone third-party module
+    sources, built with the standard `/usr/share/selinux/devel/Makefile`
+    workflow and loaded into the guest's mls store with `semodule -i`, so
+    there's no runtime dependency on GitHub or a custom selinux-policy
+    build.
 
-    Tried switching to real enforcing mode to test acceptance criterion
-    1 directly, expecting the earlier unlabeled_t denials to be a
-    transient relabel-vs-early-boot race that a *second* reboot (without
-    touching /.autorelabel again, so no relabel runs the second time)
-    would dodge. It didn't: the second, already-fully-relabeled boot hit
-    the exact same /etc/ld.so.cache denial, now enforced for real, which
-    cascades into udev helpers failing to exec (can't map their own
-    ld.so.cache) -> disk-by-uuid symlinks never appearing -> local-fs
-    mount timeouts -> emergency mode -- and emergency mode is a dead end
-    too, since root is locked, so the guest hangs forever and tmt's
-    reconnect times out. So this was never a race; the file's on-disk
-    context is durably wrong (`unconfined_u:object_r:ld_so_cache_t:s0`
-    -- a leftover *targeted*-policy context; unconfined_u isn't even a
-    valid mls user).
-
-    Root-caused it: plain restorecon/setfiles (as run by the standard
-    boot-time `/.autorelabel` relabel) only fix a file's *type*, never
-    its user/role/range, unless given `-F`. Since `ld_so_cache_t` is the
-    same type under both targeted and mls, the relabel sees "type
-    already correct" and leaves the stale targeted-policy user in
-    place forever -- confirmed directly: plain `restorecon` reports no
-    change, `restorecon -F` fixes it (`unconfined_u` -> `system_u`).
-    `prepare_for_mls.sh` now does a forced, full-context
-    `restorecon -RF /` after the reboot (`prepare_for_mls_force_relabel`)
-    to fix this for every file, not just ld.so.cache -- necessary since
-    installing/configuring anything before the reboot (which is
-    unavoidable) leaves files with the old policy's user on disk.
-
-    With ld.so.cache fixed, the next enforcing boot got further but hit
-    a different hang: local-fs.target failed waiting on /dev/disk/by-uuid
-    symlinks that udev never produced, landing in emergency mode (a dead
-    end -- no sshd, root locked). Marking every systemd `*_generator_t`
-    domain permissive (in case the generator-stage kmsg/bash denials were
-    the cause) didn't change this outcome, so those were a red herring.
-    Static review of udev_t/fsadm_t/lvm_t shows they're already heavily
-    MLS-trusted (`mls_file_read_all_levels` and friends) in the stock
-    policy, so the cause isn't obvious from source alone, and the
-    console log can't show it either (`kauditd_printk_skb: N callbacks
-    suppressed` -- the real denial(s) never made it to the console
-    before auditd was up to drain them). To get real evidence instead of
-    guessing further, the plan now makes the enforcing-mode local-fs
-    failure survivable (temporary `nofail` on non-root fstab entries) and
-    makes sure the underlying AVCs actually get captured
-    (`audit_backlog_limit=8192`, up from the kernel default of 64), then
-    inspects the loaded policy and captured denials directly.
-
-    `nofail` alone got further (local-fs.target/sysinit.target were
-    actually reached this time) but still wasn't enough: other services
-    (systemd-logind, chronyd, ...) directly require var.mount/home.mount
-    regardless of local-fs.target, and NetworkManager.service separately
-    hung for its own ~11-minute internal timeout -- plausibly because it
-    discovers interfaces via a udev monitor and never got told the NIC
-    exists, same as the disk symlinks. There's also no interactive
-    console available to log in locally once the guest lands in
-    emergency mode, only a passive console-log tail. So this plan now
-    bypasses udev and NetworkManager for networking entirely (using only
-    /sys/class/net, populated directly by the kernel driver, plus a raw
-    dhclient) and gives sshd its own dependency-free path to start, purely
-    to reach a live shell and finally capture the real blocking AVC(s)
-    with ausearch instead of guessing from console output.
-
-    That escape hatch reached sshd.service ("Started sshd.service"), but
-    the raw dhclient bring-up it depends on failed too -- its own
-    device-probe loop over /sys/class/net never found a non-loopback
-    interface within 30s, so sshd had no route and stayed unreachable.
-    The guest then just sat in this broken state until Testing Farm's own
-    infrastructure-level watchdog force-rebooted it (repeating in a clean
-    ~5.5-minute cycle, confirmed by diffing four consecutive console-log
-    boot segments with byte-identical failure signatures), until tmt's
-    own `tmt-reboot -t 1200` budget ran out and the plan errored with
-    `RebootTimeoutError`.
-
-    Before escalating further on the enforcing-mode side (console-only
-    visibility, no live shell, 5-6 minutes per iteration), a cheaper
-    experiment first: redo the *permissive*-mode boot (SSH stays up, so
-    `ausearch` is available directly, no rate-limited-console guessing)
-    but this time with `semanage dontaudit off` and the higher
-    `audit_backlog_limit` active from before boot, plus debug-level
-    logging enabled for systemd-udevd specifically
-    (`SYSTEMD_LOG_LEVEL=debug` via a service drop-in). If the enforcing
-    hang were caused by a normal TE gap, permissive mode would already
-    have logged it (just not blocked it) in every prior successful
-    permissive run -- it never did. Two explanations survive that: either
-    the missing denial is hidden by a `dontaudit` rule (invisible in
-    *both* modes, hence `dontaudit off` here), or this isn't an
-    audit-visible permission check at all but a genuine non-SELinux
-    systemd/udev-vs-MLS-range interaction (hence the debug logging, which
-    doesn't depend on AVCs existing).     A `journald` forward-to-console
-    drop-in is also staged now (harmless under permissive, since we have
-    SSH there anyway) so that if this probe comes back empty, the very
-    next enforcing attempt automatically gets the same visibility on the
-    console without needing another round-trip to add it.
-
-    The probe came back empty: `sesearch --dontaudit` confirmed the
-    rebuild actually dropped every dontaudit rule (0, down from several
-    thousand), and the only udev_t/kernel_t hits in the full,
-    dontaudit-off `ausearch` dump are ordinary process-transition noise
-    (siginh/rlimitinh/noatsecure) from `systemctl restart
-    systemd-udevd` -- nothing resembling a blocked disk/NIC access. The
-    debug-level systemd-udevd journal confirms why: it loads the SELinux
-    database, reads every rule file, and creates the
-    `/dev/disk/by-uuid/...` symlink for the root filesystem in ~11s,
-    with no errors. So this was never a normal (or dontaudit-hidden)
-    missing-rule/mlsconstrain denial.
-
-    The very next enforcing attempt then showed the same thing for the
-    first time directly: it reached multi-user.target, cloud-init.target,
-    and a real `login:` prompt with ens5 configured over plain DHCP --
-    all *before* hitting any escape-hatch machinery at all. It only broke
-    later, when cloud-init's `ssh` config module (predictably) issued its
-    own `systemctl restart sshd.service`; because the earlier escape-hatch
-    override made sshd.service's dependencies point at
-    diagnostic-network.service, that restart pulled that unit in for the
-    first time all boot, and it failed outright: its dhclient invocation
-    passed `-timeout 30`, but this dhclient build only recognizes
-    `--timeout` (single-dash `-timeout` is rejected as "Unknown
-    command"). That cascaded into a multi-user.target dependency failure
-    right as cloud-init was trying to finish, which is what actually kept
-    tmt from ever getting a stable reconnect.     Fixed the flag and reran: the escape hatch failed a *second*,
-    different way (`ip link set "" up`: its own /sys/class/net
-    device-probe loop came up empty even though ens5 had already been
-    up and DHCP-configured normally for 25+ seconds by then), still
-    with the same underlying pattern -- multi-user.target and a real
-    login prompt reached first, broken only once cloud-init's `ssh`
-    module restarted sshd and pulled the escape hatch in. Two
-    independent enforcing-mode boots now agree that disk/NIC/udev work
-    correctly on their own, and that the escape hatch is the only thing
-    still breaking the boot, so it's removed for good: the real fix
-    for the original hang was already the ld.so.cache/generator/nofail
-    work above, and this diagnostic-only workaround outlived its
-    purpose once that landed.
-
-    That "removed for good" turned out to be premature: the very next
-    run after that hit the disk-by-uuid hang again, now sharpened to a
-    single device (dev-nvme0n1p3.device, the root EBS partition -- home/
-    var/boot are plain fstab entries on that same device, not separate
-    partitions) that never becomes "ready" a second time in the main
-    OS's freshly-started udevd, even though it's already mounted as
-    root via the initrd's udevd. Neither by-uuid-vs-raw-device-path nor
-    a wider (60s) device-timeout changed anything, and static review
-    showed udev_t is already about as MLS-trusted as a domain can be
-    for this. Two live diagnostics (mls-udev-diag.service,
-    mls-udev-monitor.service) were added to get real evidence without
-    needing SSH; the monitor initially shipped with a systemd unit-file
-    bug (unescaped `%s`/`%3N` in its ExecStart) that was fixed and
-    verified locally but never actually run on Testing Farm.
-
-    Running it did give the answer, just not from the monitor itself:
-    the same boot's console showed selinux-autorelabel.service deciding
-    *another* full relabel was needed and starting `fixfiles -T 0
-    restore` at ~t=6.5s, on every single power-cycled boot, despite
-    /.autorelabel being confirmed absent right before each one --
-    competing for I/O on the very same nvme0n1p3 device everything else
-    was timing out on, and re-mangling files' SELinux user back to
-    unconfined_u mid-boot along the way (the same class of bug as the
-    ld.so.cache fix, just recurring). Masking selinux-autorelabel.service
-    outright (prepare_for_mls_force_relabel() already did the equivalent
-    full relabel once, so a second one is pure redundant I/O) was the
-    actual fix: the next run reached multi-user.target, started sshd,
-    and reached network-online.target in well under two minutes, with
-    dev-nvme0n1p3.device no longer timing out at all. The original
-    boot-hang bug this whole investigation was chasing is fixed.
-
-    That surfaced the next layer instead: tmt's own SSH reconnect still
-    never succeeded, not because the guest didn't come up (it verifiably
-    did, repeatedly, well within each power-cycle window) but because
-    every single attempt failed at the bare TCP level --
-    `ssh: connect to host <ip> port 22: Connection timed out` -- before
-    any SSH protocol exchange even starts. The same fixed IP accepted
-    SSH just fine for every earlier *permissive* reboot in the same run,
-    so this is specific to the enforcing boot, not a general Testing
-    Farm networking problem, and dontaudit-off ausearch shows nothing
-    network-related, so it doesn't look like an SELinux denial either.
-    Leading theories: a missing/late default route (would let inbound
-    SYNs arrive and get SYN-ACKed but strand the reply, looking exactly
-    like a client-side connect timeout), a firewall ruleset that's
-    default-deny for a window or permanently on this boot, or sshd not
-    actually bound where it claims. Added mls-net-diag.service (route/
-    address/firewall state plus a loopback self-connect to sshd, polled
-    every 15s for 5 minutes, forced to the console) to tell these apart
-    without needing the very SSH access that's missing; the now-answered
-    udev diagnostics are retired (kept in mls-cloudinit-fix/ for
-    reference, no longer enabled) to free up console bandwidth for it.
-
-    Ran it (Testing Farm eb2f649e): the loopback self-connect to sshd
-    succeeded on every one of 20+ iterations spanning the full 5-minute
-    window, so sshd itself accepting connections was never in question.
-    But the same diagnostic's `ip route show`/`ip -4 addr show` came back
-    essentially empty, and `ss`/`systemctl` calls in the very same run
-    failed outright ("Cannot open netlink socket: Permission denied",
-    "Failed to retrieve unit state: Access denied" with an explicit
-    `scon=initrc_t tcon=init_t ... perm=status ... Permission denied").
-    A plain ad hoc systemd service with no configured label lands in
-    initrc_t under mls, which the stock policy doesn't grant
-    NETLINK_ROUTE-socket or systemd-status-query access to -- so the
-    "empty" routing table this round is most likely the diagnostic being
-    blind under MLS, not proof the route table is actually empty. Marked
-    initrc_t permissive (same pattern as the generator-domain probe
-    earlier) so the next run's numbers can actually be trusted.
-
-    Every run since then died a different way: right after the "Switch to
-    Enforcing" step's own reboot (the first boot where SELinux actually
-    enforces mls for real), tmt's very next reconnect-and-push cycle failed
-    outright with "bash: /root/.bashrc: Permission denied" and an rsync
-    mkstemp EACCES under the tmt workdir tree -- initially misread as a
-    Testing Farm rsync/infra flake (it recurred identically across five
-    separate runs: 2fc81438, 517da82d, 8886d239, 6148f7ed, 0a61c365, and
-    again as 97baa9ee even after ruling out live-policy-reload disruption
-    as the cause). The real explanation was already sitting in the
-    permissive probe's own dontaudit-off AVC dump, just never scrutinized
-    closely enough: `root:staff_r:staff_t` (not the intended sysadm_u/
-    sysadm_r/sysadm_t) denied `read`/`open` on /root/.bashrc
-    (admin_home_t) and denied `write`/`create`/`rename` on the workdir
-    tree (var_t) -- logged-but-allowed under permissive (which is exactly
-    why every earlier permissive boot in this whole investigation looked
-    completely healthy), and a byte-for-byte match for what breaks for
-    real the instant enforcing is live. Root cause: prepare_for_mls.sh's
-    prepare_for_mls_configure() ran `semanage login -m -s sysadm_u root`
-    *before* switching SELINUXTYPE to mls, so the mapping silently landed
-    in the still-active targeted store instead of mls's own; mls's stock
-    default then took over instead, landing root in staff_r/staff_t (a
-    deliberately more confined role that was never going to have blanket
-    admin_home_t/var_t access) instead of the intended sysadm_r/sysadm_t.
-    Fixed by reordering those two lines (see prepare_for_mls.sh) so the
-    login mapping lands in the correct (mls) store.
-
-    Confirmed fixed by three separate Testing Farm runs after a5c7dfde
-    (7055660d, a1724108, 34499498, 68ed863b, 75a93cfe): the "bash:
-    /root/.bashrc: Permission denied" / rsync mkstemp EACCES failure that
-    blocked every single run for the previous week is completely gone --
-    every step through "Probe for udev/NIC AVCs" now passes reliably, and
-    the very first real-enforcing-mode SSH session (post the "Switch to
-    Enforcing" step's own reboot) works correctly. That confirms the
-    original hypothesis in full: this whole class of failure really was a
-    real, enforced AVC (root landing in the wrong, more confined SELinux
-    role), invisible under permissive, blocking for real the instant
-    enforcing went live -- not a coincidental non-SELinux bug.
-
-    A new, *different* blocker now appears at exactly the same spot, three
-    times in a row (34499498, 68ed863b, 75a93cfe): tmt's own reboot-polling
-    logic crashes ~30-32s after the "Switch to Enforcing" step's tmt-reboot
-    is issued, with "Plugin raised an unhandled exception" and a traceback
-    bottoming out in tmt/guest/__init__.py's BootMarkBootTime.fetch():
-    `assert stdout` failing because stdout is the empty string. This is a
-    tmt/OpenSSH ControlMaster reliability gap, not an SELinux or mls.fmf
-    problem: tmt's reboot-detection poll (`cat /proc/stat`, checked every
-    30s) apparently can, at least right after issuing a real `reboot`,
-    successfully open a channel on the still-cached multiplexed SSH
-    connection and get back a clean exit 0 with *no output at all* instead
-    of either real content or a clear connection failure -- and tmt's own
-    boot-mark code has no defensive handling for that transient case, so
-    it crashes the whole plan instead of just treating it as "reboot not
-    detected yet, keep waiting" (which is exactly what happens 30s earlier
-    and, presumably, would happen 30s later if given the chance). Notably
-    this exact `tmt-reboot` mechanism has worked flawlessly, every single
-    time, for the *other* reboots in this same plan (Relabel step, Probe
-    step) across dozens of runs -- so whatever's different about this one
-    specific reboot (the first one that actually flips SELINUX=enforcing,
-    though the *shutdown* half still runs under the still-live, still-
-    permissive old session) needs more evidence before concluding it's
-    mls-specific rather than environmental. Next step: retry enough times
-    to tell whether this is genuinely deterministic here or just an
-    unlucky short streak, and if deterministic, consider a workaround at
-    the tmt-reboot call site (e.g. a custom reboot command that guarantees
-    the SSH channel itself closes before the actual reboot(8) syscall
-    fires, so a stale multiplexed channel can't produce a false "success")
-    rather than a tmt upstream patch, since this whole investigation
-    treats a5c7dfde's login mapping bug as the actual root cause this plan
-    was chasing.
-
-    That "tmt/OpenSSH tooling bug, not policy" conclusion was wrong, and a
-    closer look at the *permissive*-mode probe's own dontaudit-off ausearch
-    dump (the same one already captured every run, just not scrutinized for
-    this) proves it: right in the middle of the very SSH login that
-    tmt/Testing Farm's worker makes to run each command, dontaudit-off
-    surfaces `sysadm_u:sysadm_r:sysadm_t` denied `read`/`ioctl` on one
-    inherited pipe and `write` on another, plus `cat` itself (comm="cat")
-    denied `getattr` on its own stdout pipe -- all four `tclass=fifo_file`,
-    all four `tcontext=system_u:system_r:sshd_session_t` (OpenSSH's newer,
-    privilege-separated per-session process). That is: the login shell (and
-    whatever it execs -- here literally `cat`, tmt's own boot-mark probe)
-    is denied access to the very pipes sshd-session hands it as stdin/
-    stdout. Under permissive this is silently tolerated and data still
-    flows, which is exactly why every earlier permissive boot looked
-    completely healthy on this front; under real enforcement the command
-    still runs and still exits (0), but literally no bytes can cross back
-    over those pipes to sshd -- indistinguishable, from tmt's or any SSH
-    client's point of view, from "clean success with empty output". That is
-    a byte-for-byte match for the exact symptom above, three runs running,
-    always at exactly this reboot (the first one that's genuinely
-    enforcing) and never at the plan's other reboots (which never exercise
-    a *freshly re-authenticated* SSH session under real mls enforcement
-    the way this one does).
-
-    This is a real, already-known upstream gap: fedora-selinux/selinux-policy
-    commit a589b1b5 ("Allow all domains to use inherited sshd-session
-    pipes", fixing fedora-selinux/selinux-policy#3286) added
-    `ssh_session_rw_pipes(domain)` next to the pre-existing
-    `ssh_rw_pipes(domain)` in policy/modules/kernel/domain.te -- i.e.
-    exactly this grant, previously only wired up for passwd_t. It isn't in
-    selinux-policy-mls-44.6-1.fc44 (what this compose ships) yet. Under
-    targeted policy this gap is invisible because root's interactive
-    session there is unconfined_t, which bypasses TE checks entirely --
-    mls is what actually exercises this path, via sysadm_t, which is
-    exactly why "permissive has no problem and enforcing has": it was never
-    a permissive-vs-enforcing tooling quirk, it's a real TE gap that only
-    an actually-confined, actually-enforcing session can hit. Backported
-    locally as its own tiny module (mls-ssh-pipes-fix/mlssshpipes.te,
-    built and loaded the same way as the cloudform module) rather than
-    pulling in a newer selinux-policy build.
+    `prepare_for_mls.sh` implements the actual policy switch (login
+    mapping, SELINUXTYPE, scheduled relabel, reboot, and the follow-up
+    forced full-context relabel); see its header for why each step is
+    necessary. This plan sequences that around staging the two modules
+    above and a second reboot into real enforcing mode.
 
 prepare:
   - name: Install and configure MLS policy in Permissive mode
     how: shell
     script: |
-      dnf install -y selinux-policy-mls policycoreutils-python-utils audit setools-console
+      dnf install -y selinux-policy-mls policycoreutils-python-utils audit
 
-      # prepare_for_mls_configure() (tmt/prepare_for_mls.sh) does the
-      # correct, minimal, documented setup for switching to mls: mapping
-      # root to sysadm_u, pointing SELINUXTYPE at the mls store, and
-      # scheduling a full relabel. It's split from prepare_for_mls_reboot()
-      # here because the next prepare step below needs to stage the
-      # cloudform module fix into the (still inactive) mls store before we
-      # actually reboot into it.
       source $TMT_TREE/tmt/prepare_for_mls.sh
-
-      # New (a5c7dfde follow-up): reordering prepare_for_mls_configure() so
-      # SELINUXTYPE flips to mls *before* the semanage login mapping (the
-      # actual fix for the staff_t-vs-sysadm_t bug documented above) made
-      # this step start failing outright, deterministically, in ~8s -- no
-      # stderr captured at all under the step's normal `set -eo pipefail`
-      # wrapper, just a bare nonzero exit once the function returns. Run it
-      # with `set +e` here instead, just for this one call, so a failure
-      # doesn't immediately abort the whole script before dumping the same
-      # kind of state a live shell would let us inspect directly (store
-      # existence/contents, current mode, semanage's own view of the login
-      # database) -- our own equivalent of the "capture real evidence
-      # instead of guessing further" approach used throughout this plan.
-      set +e
       prepare_for_mls_configure
-      configure_rc=$?
-      set -e
-      if [ "$configure_rc" -ne 0 ]; then
-          echo "=== prepare_for_mls_configure failed with exit $configure_rc -- diagnostics ==="
-          echo "--- /etc/selinux/config ---"
-          cat /etc/selinux/config
-          echo "--- /etc/selinux/mls/ (does the store exist / is it populated?) ---"
-          ls -la /etc/selinux/mls/ 2>&1 || true
-          ls -la /etc/selinux/mls/policy/ 2>&1 || true
-          echo "--- current SELinux runtime status ---"
-          getenforce 2>&1 || true
-          sestatus 2>&1 || true
-          echo "--- semanage login -l against the (now-selected) mls store ---"
-          semanage login -l 2>&1 || true
-          echo "--- semanage login -l against mls explicitly via -S, in case config-file selection is the issue ---"
-          semanage -S mls login -l 2>&1 || true
-          exit "$configure_rc"
-      fi
 
-      # IMPORTANT: Switch to permissive to survive the boot relabel.
-      # Permissive still logs every AVC that would have been denied, so
-      # this is sufficient for capturing denials without risking another
-      # boot hang from a real enforcing-mode block. This is a workaround
-      # for still-open bugs (see the relabel-race denials this plan
-      # captures below), not part of the general/correct MLS switch
-      # procedure documented in prepare_for_mls.sh, so it stays here
-      # instead of in that shared library.
+      # Stay permissive for the upcoming relabel reboot; the deliberate
+      # switch to real enforcing mode is its own later step, once the mls
+      # switch itself is known-good.
       sed -i 's/^SELINUX=.*/SELINUX=permissive/' /etc/selinux/config
 
-      # IMPORTANT: cloud-init's `ssh` module deletes and regenerates the
-      # SSH host keys on what it thinks is a fresh instance boot (see
-      # below). If the host key changes, tmt/Testing Farm's SSH connection
-      # back to this guest can fail in a way that just looks like "still
-      # waiting for the guest to come back", hanging well past the reboot
-      # timeout instead of failing cleanly. Tell cloud-init to keep the
-      # existing keys instead of deleting them.
+      # cloud-init's `ssh` module regenerates host keys on what it thinks
+      # is a fresh instance boot; keep the existing ones so tmt's SSH
+      # reconnects across this plan's reboots don't break.
       mkdir -p /etc/cloud/cloud.cfg.d
       echo 'ssh_deletekeys: false' > /etc/cloud/cloud.cfg.d/99-preserve-ssh-host-keys.cfg
 
-      # Reset cloud-init's per-instance state so that on the *next* boot
-      # (triggered below) systemd re-runs the full local -> init -> config
-      # -> final stage sequence for real, under the correct SELinux domain
-      # transitions. Manually re-invoking `cloud-init` from a login shell
-      # after boot does NOT reproduce this: it skips the config/final
-      # stages (most filesystem-changing modules live there) and it runs
-      # in your login domain instead of the dedicated cloud-init domain(s),
-      # since the domain transition only happens when systemd starts the
-      # units.
+      # Reset cloud-init's per-instance state so the next boot re-runs
+      # the full local -> init -> config -> final stage sequence under
+      # the correct (mls) SELinux domain transitions, instead of seeing
+      # an already-provisioned instance and skipping everything.
       cloud-init clean --logs
 
   - name: Build and load cloud-init and sshd-session-pipes policy fixes
@@ -448,31 +68,12 @@ prepare:
     script: |
       dnf install -y policycoreutils-devel
 
-      # IMPORTANT: don't rebuild the whole mls base + module set from
-      # source (tried first; see git history of this file for why that
-      # path -- and hot-patching individual modules from it into the stock
-      # store -- both failed). cloudform doesn't exist in the installed mls
-      # store at all yet, so adding it is a pure `semodule -i` of a new
-      # module, not a replacement of anything -- there's no version to
-      # reconcile. The standard, supported way to build *one* module like
-      # this against whatever policy is actually installed is the devel
-      # Makefile shipped by policycoreutils-devel/selinux-policy-devel: it
-      # builds against /usr/share/selinux/devel/include, the same
-      # interface headers (corenetwork.if, sysnet.if, ...) already backing
-      # the live store, so there's no cross-snapshot mismatch to hit.
-      #
-      # cloudform.te calls our new networkmanager_manage_rw_conf,
-      # ssh_read_server_keys, and sysnet_manage_config_sockets interfaces,
-      # which only exist on the mls-enable-cloud-init fork's
-      # networkmanager.if/ssh.if/sysnetwork.if, not in the stock headers.
-      # All three interfaces just expand into ordinary allow/manage_*_pattern
-      # rules against types the already-installed networkmanager/ssh/
-      # sysnetwork modules provide -- so we don't need to rebuild or
-      # reinstall those modules at all. The devel Makefile picks up every
-      # *.if file under each header layer directory, so dropping our new
-      # interfaces in as their own files alongside the stock
-      # networkmanager.if/ssh.if/sysnetwork.if is enough; nothing installed
-      # needs to be touched or replaced.
+      # cloudform.te calls interfaces not in the stock headers yet
+      # (networkmanager_manage_rw_conf, ssh_read_server_keys,
+      # sysnetwork_manage_config_sockets); they just expand into ordinary
+      # allow/manage_*_pattern rules against types the already-installed
+      # networkmanager/ssh/sysnetwork modules provide, so only the
+      # interface files need adding here.
       cp $TMT_TREE/tmt/mls-cloudinit-fix/networkmanager-manage-rw-conf.if \
           /usr/share/selinux/devel/include/contrib/
       cp $TMT_TREE/tmt/mls-cloudinit-fix/ssh-read-server-keys.if \
@@ -484,875 +85,69 @@ prepare:
       cp $TMT_TREE/tmt/mls-cloudinit-fix/cloudform.te .
       cp $TMT_TREE/tmt/mls-cloudinit-fix/cloudform.if .
       cp $TMT_TREE/tmt/mls-cloudinit-fix/cloudform.fc .
-
-      make -f /usr/share/selinux/devel/Makefile cloudform.pp
-
-      # Second, unrelated fix built the same way: sysadm_t (root's actual
-      # login domain under mls) is missing read/write/ioctl/getattr on
-      # pipes inherited from OpenSSH's sshd_session_t, a real upstream gap
-      # (fedora-selinux/selinux-policy commit a589b1b5, not yet in
-      # selinux-policy-mls-44.6-1.fc44) that only bites once mls is
-      # actually enforcing -- see this file's description for the full
-      # ausearch evidence and how it explains tmt's post-"Switch to
-      # Enforcing" reconnect failures. `domain` (the attribute every
-      # confined process type carries) and sshd_session_t both already
-      # exist in the stock mls store, so this needs no new interface
-      # headers, unlike cloudform.pp above.
       cp $TMT_TREE/tmt/mls-ssh-pipes-fix/mlssshpipes.te .
-      make -f /usr/share/selinux/devel/Makefile mlssshpipes.pp
 
-      # IMPORTANT: -n / --noreload. `semodule -i` operates on the store
-      # named by /etc/selinux/config's SELINUXTYPE -- which we already set
-      # to "mls" in the previous prepare step -- but by *default* it also
-      # pushes that store live into the running kernel right away via
-      # security_load_policy(), regardless of whether that store matches
-      # the policy the kernel is actually running. We're still running the
-      # guest's original (targeted) boot policy at this point (the mls
-      # store won't actually become the *active* kernel policy until the
-      # reboot below, via /.autorelabel), so forcing the just-built mls
-      # store live now would instantly apply MLS-level checks to every
-      # already-running process/file still labeled under targeted contexts
-      # -- which is exactly what happened the first time this was tried
-      # without -n: the guest broke immediately (`/root/.bashrc: Permission
-      # denied`, tmt's own log-pulling rsync failing with EACCES, ...)
-      # because the live kernel was suddenly enforcing MLS semantics no
-      # running context actually satisfied. -n keeps this an entirely
-      # offline edit of the (currently inactive) mls store.
+      make -f /usr/share/selinux/devel/Makefile cloudform.pp mlssshpipes.pp
+
+      # -n: build these into the (currently inactive) mls store without
+      # hot-reloading the live kernel, which is still running -- and
+      # still enforcing -- the old targeted policy at this point. The
+      # mls store only becomes the active kernel policy on the reboot in
+      # the next step.
       semodule -n -i cloudform.pp mlssshpipes.pp
       semodule -l | grep -E '^(cloudform|mlssshpipes)\b'
 
-  - name: Reboot to apply MLS and Relabel
+  - name: Reboot to apply MLS and relabel
     how: shell
     script: |
-      # prepare_for_mls_reboot() (tmt/prepare_for_mls.sh) already guards
-      # against tmt re-running this step from the top on every reconnect
-      # (which, unguarded, requested a fresh reboot every time and never
-      # converged) via TMT_REBOOT_COUNT.
       source $TMT_TREE/tmt/prepare_for_mls.sh
       prepare_for_mls_reboot
-
-  - name: Confirm and fix the /etc/ld.so.cache invalid post-relabel context
-    how: shell
-    script: |
-      # A second, already-fully-relabeled reboot into enforcing still hit
-      # the exact same /etc/ld.so.cache denial as the very first boot --
-      # so this was never a transient relabel-vs-early-boot *race* (which
-      # would have cleared by the second boot); the file's on-disk
-      # context is durably wrong. Captured trawcon on the enforcing run:
-      #   unconfined_u:object_r:ld_so_cache_t:s0
-      # unconfined_u isn't even a valid SELinux user under mls, and s0
-      # alone isn't a valid mls range for a system object -- this reads
-      # exactly like a leftover *targeted*-policy context that a full
-      # mls relabel should have overwritten, but didn't.
-      #
-      # Confirmed root cause: restorecon/setfiles only fix the *type*
-      # component of a context by default; fixing the user/role/range
-      # too requires -F. ld_so_cache_t is the same type name under both
-      # targeted and mls, so the boot-time relabel sees "type already
-      # correct" and never touches the stale unconfined_u/s0 left over
-      # from before the policy switch (matchpathcon -V even reports the
-      # file as "verified" for the same reason). Demonstrated below, then
-      # fixed properly for real via prepare_for_mls_force_relabel()
-      # (tmt/prepare_for_mls.sh), which now does a forced, full-context
-      # `restorecon -RF /` after the reboot -- see its comment for why
-      # this can't run before the reboot.
-      echo "=== current on-disk context ==="
-      ls -Z /etc/ld.so.cache
-      stat /etc/ld.so.cache
-
-      echo "=== what mls file_contexts says this path should be (full context) ==="
-      matchpathcon -V /etc/ld.so.cache
-
-      echo "=== does a normal (type-only) restorecon think there's anything to fix? ==="
-      restorecon -v /etc/ld.so.cache; echo "exit=$?"
-      ls -Z /etc/ld.so.cache
-
-      echo "=== full-context relabel of the whole filesystem (the actual fix) ==="
-      source $TMT_TREE/tmt/prepare_for_mls.sh
       prepare_for_mls_force_relabel
 
-      echo "=== /etc/ld.so.cache context after the forced relabel ==="
-      ls -Z /etc/ld.so.cache
-
-  - name: Probe for udev/NIC AVCs under permissive with dontaudit off
+  - name: Switch to Enforcing and reboot again (tests acceptance criterion 1)
     how: shell
     script: |
-      # TMT_REBOOT_COUNT is scoped to this prepare phase alone (tmt hands
-      # each phase its own counter, reset to 0 on entry, and re-runs just
-      # this phase's script -- not the whole plan -- after handling the
-      # requested reboot), so this is enough to request the reboot
-      # exactly once and run the diagnostics below only after it, with no
-      # separate marker file needed.
       if [ "${TMT_REBOOT_COUNT:-0}" -eq 0 ]; then
-          # Every successful *permissive*-mode boot so far (including the
-          # relabel boot right before this step) already exercised the
-          # exact same disk mounts and NIC probing that hang under
-          # enforcing, and never logged a single udev/disk/NIC-related
-          # denial -- permissive mode logs every denial it *would* have
-          # blocked, so a normal missing-TE-rule gap would already be
-          # visible here. It never has been. `dontaudit off` rebuilds the
-          # loaded policy with dontaudit rules disabled, which is the one
-          # thing that stays invisible in *both* permissive and enforcing
-          # mode alike -- so if there's a suppressed denial hiding behind
-          # one of those, this is the only way to see it without going
-          # through another 5-6-minute enforcing-mode console-only round
-          # trip.
-          #
-          # IMPORTANT (new, matches the class of bug already root-caused
-          # for `semanage permissive -a` above/below -- see the eb2ade08
-          # comment near the udev_t/NetworkManager_t permissive calls):
-          # `semanage dontaudit off` without `--noreload`/`-N` does an
-          # immediate rebuild-and-reload of the whole mls store into the
-          # live kernel, right here, followed within a handful of lines by
-          # this exact step's own `tmt-reboot` -- a real, hard reboot of
-          # the guest. Every single run through eb2ade08 (7 in a row:
-          # 2fc81438/517da82d/8886d239/6148f7ed/0a61c365/97baa9ee/37e1e883)
-          # died the same way, immediately after *this* step hands back to
-          # tmt: "bash: /root/.bashrc: Permission denied" plus an rsync
-          # mkstemp EACCES pushing the *next* step's script over the
-          # freshly-reestablished SSH session. A live diagnostic pass
-          # right after that reboot (id -Z, on-disk labels/modes for the
-          # failing paths, pam_namespace/namespace.conf, the full mount
-          # table) found nothing actually broken -- context was a normal
-          # root:staff_r:staff_t:s0-s15:c0.c1023, /root and /root/.bashrc
-          # had ordinary correct labels/modes, no polyinstantiation is
-          # even configured (every namespace.conf directive is stock-
-          # commented-out), and root could freely write to both /root and
-          # /var/ARTIFACTS moments before the very next push failed the
-          # same way. That points at a timing/ordering bug, not a
-          # persistent state problem: if the reboot below fires while the
-          # `dontaudit off` rebuild+reload triggered here is still
-          # finishing in the background (plausible under mls's much
-          # larger c0.c1023 category space than targeted/mcs), the on-disk
-          # store or some semanage-managed file could be left mid-write,
-          # which would only show up as a downstream oddity on the very
-          # next boot -- exactly where every one of those 7 runs actually
-          # failed. `-N` defers the reload to the next policy load
-          # (i.e. this same imminent reboot) instead of doing it live,
-          # the same fix already proven for `semanage permissive -a`
-          # elsewhere in this plan, and it's free here since the reboot
-          # is the very next thing this step does anyway.
-          semanage dontaudit -N off
-
-          # Same audit_backlog_limit fix as the later enforcing step,
-          # just moved earlier so this probe boot benefits from it too --
-          # otherwise a burst of early-boot AVCs could still get dropped
-          # from the backlog before auditd drains them, independent of
-          # dontaudit.
-          grubby --update-kernel=ALL --args="audit_backlog_limit=8192"
-
-          # SYSTEMD_LOG_LEVEL=debug specifically for systemd-udevd (not
-          # systemd itself, to avoid drowning everything else in noise):
-          # covers the case this isn't a permission check at all but a
-          # udev-side bug that only manifests as MLS ranges/categories
-          # (e.g. failing to compute a worker or device-node context,
-          # silently retrying/hanging instead of erroring) -- which
-          # `ausearch` can never show since no avc_has_perm() call would
-          # even happen. journald's forward-to-console is staged here too
-          # (inert under permissive, since SSH already works) so the
-          # *next* enforcing attempt gets the same visibility for free if
-          # this probe comes back empty.
-          mkdir -p /etc/systemd/system/systemd-udevd.service.d
-          cp $TMT_TREE/tmt/mls-cloudinit-fix/systemd-udevd-debug.conf \
-              /etc/systemd/system/systemd-udevd.service.d/99-debug.conf
-          mkdir -p /etc/systemd/journald.conf.d
-          cp $TMT_TREE/tmt/mls-cloudinit-fix/journald-forward-console.conf \
-              /etc/systemd/journald.conf.d/99-diag-console.conf
-          systemctl daemon-reload
-
-          tmt-reboot -t 300
-      else
-          echo "=== confirm dontaudit rules are actually gone from the loaded policy ==="
-          echo "dontaudit rule count (should be ~0, not the stock policy's several thousand):"
-          sesearch --dontaudit 2>&1 | wc -l || true
-
-          echo "=== sanity: did this fresh boot reach multi-user/network fine under permissive? ==="
-          systemctl is-system-running 2>&1 || true
-          ip addr show 2>&1 || true
-          ls -la /dev/disk/by-uuid/ 2>&1 || true
-
-          echo "=== full AVC/USER_AVC list, this (dontaudit-off) boot ==="
-          ausearch -m AVC,USER_AVC -ts boot 2>&1 || echo "no AVCs at all this boot"
-
-          echo "=== filtered: anything touching udev/NIC/module/device machinery ==="
-          ausearch -m AVC,USER_AVC -ts boot 2>&1 \
-              | grep -iE 'udev|nic|netif|module|kernel_t|net_device|rawip|tun_socket|ethernet|virtio|ena_|eth0|ens[0-9]|zram|blk_file|fixed_disk|disk_device' \
-              || echo "none found -- this isn't a normal (or dontaudit-suppressed) TE/mlsconstrain denial"
-
-          echo "=== systemd-udevd debug journal for this boot (SYSTEMD_LOG_LEVEL=debug) ==="
-          journalctl -b -u systemd-udevd --no-pager -o short-monotonic 2>&1 || true
-
-          echo "=== udev trigger/settle activity this boot ==="
-          journalctl -b -u 'systemd-udev*' --no-pager -o short-monotonic 2>&1 || true
-
-          # New: every run since eb2ade08 (deferred -n permissive changes)
-          # still dies immediately after *this* step hands back to tmt,
-          # when tmt tries to rsync-push the next step's script over this
-          # same just-established SSH session -- "bash: /root/.bashrc:
-          # Permission denied" plus rsync mkstemp EACCES under
-          # /var/ARTIFACTS/.../tmt/mls/tree/. That's the exact symptom this
-          # file already documented once before for a *different* cause
-          # (a live semodule/permissive reload disrupting a running
-          # session's context mid-flight) -- but no such reload happens
-          # between here and the next step, so it must be something about
-          # *this* session itself: this is the first SSH login to land as
-          # sysadm_u/sysadm_r/sysadm_t under the now-active MLS kernel
-          # policy (the semanage login mapping was staged pre-reboot but
-          # could never actually take effect until the mls policy itself
-          # became the live kernel policy, which only happened starting
-          # with the "Reboot to apply MLS and Relabel" step). Capture
-          # everything needed to explain a *DAC* (not AVC-visible, since
-          # we're still permissive) Permission denied on this exact
-          # session before it gets reused for the next push: our own
-          # resulting context/range, on-disk labels for the paths that
-          # fail, and whether pam_namespace (stock Fedora/MLS's per-level
-          # polyinstantiation of /tmp, and sometimes $HOME) is configured
-          # and could be bind-mounting something unexpected over /root or
-          # interfering with /var/ARTIFACTS.
-          echo "=== our own resulting SELinux context/range for this SSH session ==="
-          id -Z 2>&1 || true
-
-          echo "=== /root and /root/.bashrc: DAC mode/owner + SELinux label ==="
-          ls -laZd /root 2>&1 || true
-          ls -laZ /root/.bashrc 2>&1 || true
-          stat /root/.bashrc 2>&1 || true
-
-          echo "=== /var/ARTIFACTS and the live work directory: DAC mode/owner + SELinux label ==="
-          ls -laZd /var/ARTIFACTS 2>&1 || true
-          ls -laZd /var/ARTIFACTS/work-* 2>&1 || true
-          find /var/ARTIFACTS -maxdepth 3 -exec ls -ldZ {} \; 2>&1 || true
-
-          echo "=== is pam_namespace configured (stock MLS per-level /tmp or \$HOME polyinstantiation)? ==="
-          grep -H pam_namespace /etc/pam.d/* 2>&1 || echo "pam_namespace not referenced in /etc/pam.d/*"
-          cat /etc/security/namespace.conf 2>&1 || true
-          mount 2>&1 | grep -iE 'root|artifacts|tmp-inst|polyinstant' || echo "no polyinstantiation-looking mounts found"
-
-          echo "=== full mount table, for anything odd (bind mounts, wrong fs, ro remounts) ==="
-          mount 2>&1 || true
-
-          echo "=== sanity: can root actually write *anywhere* right now, or is this global? ==="
-          touch /root/.mls-diag-write-test 2>&1 && echo "write to /root OK" && rm -f /root/.mls-diag-write-test
-          touch /var/ARTIFACTS/.mls-diag-write-test 2>&1 && echo "write to /var/ARTIFACTS OK" && rm -f /var/ARTIFACTS/.mls-diag-write-test
-      fi
-
-  - name: Switch to Enforcing and reboot again (tests acceptance criterion 1 for real)
-    how: shell
-    script: |
-      # Gated behind TEST_ENFORCING (default on now that the previous
-      # step's forced relabel should have fixed the root cause of the
-      # hang this step used to reproduce -- flip it off again if it
-      # regresses without wanting to burn 20 minutes on every run).
-      # TMT_REBOOT_COUNT is its own fresh, phase-scoped counter (see the
-      # note in the probe step above), so -eq 0 here only guards *this*
-      # phase's own reboot, independent of the reboot the probe step
-      # above already took.
-      if [ "${TEST_ENFORCING:-1}" = "1" ] && [ "${TMT_REBOOT_COUNT:-0}" -eq 0 ]; then
-          # The ld.so.cache fix above cleared that denial, but the very
-          # next enforcing boot then hung on a *different*, pre-existing
-          # gap in the stock mls policy's systemd module -- unrelated to
-          # cloudform/cloud-init, and with a long history of similar
-          # one-off bugs upstream (e.g. RHEL-14289, which had to add a
-          # private semanage_exec_t type just so selinux-autorelabel.service
-          # itself could run under mls):
-          #   - systemd_selinux_autorelabel_generator_t denied `execute`
-          #     on shell_exec_t (can't even exec bash)
-          #   - EVERY *_generator_t domain tried so far (getty, sysv,
-          #     factory-reset, bless-boot, rc-local, cryptsetup, ...)
-          #     denied `write` on kmsg_device_t:s15 -- a genuine mls BLP
-          #     "no write up" constraint, since these domains run at the
-          #     low end (s0) of their s0-s15 range by default. This looks
-          #     like a blanket mls-vs-systemd-generators design gap, not
-          #     a handful of missing rules, so mark the whole family
-          #     permissive dynamically instead of chasing them one by one.
-          # This is a diagnostic probe, not a real fix (a real fix
-          # belongs in selinux-policy's systemd module, not here).
-          semanage permissive -a systemd_selinux_autorelabel_generator_t
-          seinfo -t 2>/dev/null | grep -E '_generator_t$' | while read -r t; do
-              semanage permissive -a "$t" 2>&1 || true
-          done
-          semanage permissive -l | grep generator
-
-          # That generator probe got past the generator/kmsg denials, but
-          # the *next* enforcing boot still hung: local-fs.target failed
-          # (boot.mount, boot-efi.mount, home.mount, var.mount all timed
-          # out waiting for their /dev/disk/by-uuid symlinks -- i.e.
-          # something in the udev/blkid path isn't working under
-          # enforcing), which cascades into emergency mode, which is a
-          # dead end for tmt (no sshd, root locked). Console output alone
-          # couldn't explain *why*: `kauditd_printk_skb: N callbacks
-          # suppressed` shows the kernel was rate-limiting how many AVCs
-          # it echoed to the console once auditd wasn't yet up to drain
-          # them, so the actual denial(s) responsible were never visible.
-          #
-          # Static policy review makes the obvious suspects unlikely:
-          # udev_t already carries mls_file_read_all_levels (and more),
-          # and the fstools module (which udev_t domtrans's to for blkid,
-          # landing in fsadm_t -- also mls_file_read_all_levels'd) is
-          # enabled for mls. So this needs real evidence, not more
-          # guessing from static analysis. Two changes to get it:
-          #
-          #  1. `nofail` + a short device-timeout on every non-swap fstab
-          #     mount, so a stuck-forever by-uuid symlink can no longer
-          #     block local-fs.target -> multi-user.target -> sshd. This
-          #     doesn't fix anything; it just stops the symptom (hang)
-          #     from hiding the cause, by letting us reach a live SSH
-          #     session after the same underlying failure occurs.
-          #  2. `audit_backlog_limit=8192` (default is 64) on the kernel
-          #     command line, so early-boot AVCs queue up for auditd
-          #     instead of being dropped once the default 64-entry
-          #     backlog fills -- independent of and in addition to the
-          #     console print-rate-limit above; this is what actually
-          #     guarantees ausearch can find them later, regardless of
-          #     what did or didn't make it to the console.
-          cp /etc/fstab /etc/fstab.pre-nofail-probe
-
-          # New (04bf1a50 follow-up): a fresh enforcing run with the
-          # watchdog probe confirmed two things with sharper evidence
-          # than before. First, /dev/watchdog* doesn't exist on this
-          # guest at all ("No such file or directory" from both `ls`
-          # and `wdctl`) -- the ~5-minute external reboot cadence seen
-          # throughout this investigation is *not* a guest-visible
-          # hardware/software watchdog, it's coming from outside the
-          # guest OS entirely (infrastructure-level, invisible to tmt
-          # and to us). Second, the by-uuid hang is still exactly what
-          # blocks multi-user.target every cycle, deterministically,
-          # completely independent of the separate ~2min
-          # NetworkManager-wait-online slowness (which resolves on its
-          # own and never blocks anything, since network-online.target
-          # only Wants it, not Requires it).
-          #
-          # Rather than just widening the by-uuid timeout again (60s
-          # already didn't help), bypass udev's by-uuid symlink
-          # resolution for these mounts entirely: home/var/boot are
-          # plain fstab entries on the *same* underlying block device
-          # as the already-mounted root filesystem (confirmed earlier
-          # -- they share one UUID, root is just several btrfs
-          # subvolumes), so the raw partition device node is already
-          # known to the kernel the moment it's partitioned/enumerated
-          # and doesn't need udev to (re-)probe it by UUID at all. If
-          # udev's per-device blkid/symlink pipeline is what's actually
-          # stalling under enforcing (everything gathered so far points
-          # there: the coldplug trigger itself finishes in under a
-          # second every boot, but the resulting by-uuid symlink still
-          # isn't there 60s later), skipping that pipeline for these
-          # mounts should let them come up as fast as root itself does.
-          # Resolve while still permissive, when blkid/findmnt are known
-          # to work fine, so this can't itself become a chicken-and-egg
-          # problem once enforcing is live.
-          while read -r uuid; do
-              [ -z "$uuid" ] && continue
-              dev=$(blkid -U "$uuid" 2>/dev/null || true)
-              if [ -n "$dev" ]; then
-                  echo "resolved UUID=$uuid -> $dev, rewriting fstab"
-                  sed -i "s#UUID=$uuid#$dev#g" /etc/fstab
-              else
-                  echo "WARNING: could not resolve UUID=$uuid via blkid, leaving as UUID= (nofail/timeout below still applies)"
-              fi
-          done < <(awk '!/^#/ && NF >= 4 && $3 != "swap" && $1 ~ /^UUID=/ { sub(/^UUID=/, "", $1); print $1 }' /etc/fstab.pre-nofail-probe | sort -u)
-
-          # Keep nofail + a device-timeout as a safety net regardless
-          # (covers any entry that didn't resolve above, and just
-          # generally keeps a stuck mount from hard-blocking boot).
-          cp /etc/fstab /etc/fstab.pre-nofail-probe2
-          awk '!/^#/ && NF >= 4 && $3 != "swap" { $4 = $4",nofail,x-systemd.device-timeout=60" } { print }' \
-              /etc/fstab.pre-nofail-probe2 > /etc/fstab
-          echo "=== /etc/fstab after UUID->raw-device rewrite + nofail (diagnostic only) ==="
-          cat /etc/fstab
-
-          grubby --update-kernel=ALL --args="audit_backlog_limit=8192"
-          echo "=== confirm audit_backlog_limit landed on the default boot entry ==="
-          grubby --info=DEFAULT | grep args
-
-          # Even with the fstab mounts made survivable above, the very next
-          # boot still never got tmt's SSH connection back: local-fs.target
-          # and sysinit.target *did* get reached this time (real progress --
-          # confirms the nofail fix works), but basic.target/multi-user.target
-          # still failed, because specific services (systemd-logind,
-          # chronyd, ...) directly require var.mount/home.mount rather than
-          # going through local-fs.target, and separately NetworkManager.service
-          # itself hung for its own ~11-minute internal timeout. Even the
-          # *root* filesystem's own by-uuid symlink -- already mounted and
-          # in active use -- never got (re-)created post-switch_root, which
-          # is why this looks like systemd-udevd's whole event-processing
-          # path is stuck, not something storage/blkid-specific (unrelated
-          # devices like /dev/ttyS0 and /dev/zram0 time out identically).
-          # NetworkManager itself discovers interfaces via a udev monitor,
-          # so it's plausible it's not blocked by any *specific* unmet
-          # dependency at all -- it may just be waiting forever to be told
-          # by udev that the NIC exists.
-          #
-          # Chasing each individually-blocking unit looked like a losing
-          # game at the time, so this step used to also bypass udev and
-          # NetworkManager for networking entirely (a raw dhclient run
-          # from /sys/class/net, plus a dependency-free sshd override) to
-          # reach a live shell no matter what. That escape hatch itself
-          # turned out to be buggy (a bad dhclient flag, then an
-          # empty-interface race) and broke two runs on its own, so it's
-          # gone now -- both of those runs otherwise reached
-          # multi-user.target, cloud-init.target, and a real `login:`
-          # prompt with ens5 up over plain DHCP before ever touching it,
-          # confirming NIC/network bring-up itself is fine. Removing it
-          # was a real fix, just not *the* fix: a follow-up run without
-          # the escape hatch still hung, with a much sharper signature
-          # now that the escape-hatch noise is gone -- home.mount,
-          # boot.mount, boot-efi.mount, and var.mount (every non-root
-          # fstab entry) fail every single cycle because their
-          # /dev/disk/by-uuid/<uuid>.device units time out at exactly
-          # the 10s x-systemd.device-timeout set below, while the root
-          # filesystem (mounted from the initrd, before fstab/udev-by-uuid
-          # is even involved) is fine, and sshd.service *does* start
-          # successfully around t=60s regardless -- tmt's reconnect still
-          # never succeeds, though, so something about that half-booted
-          # state (no /home, no /var, no /boot) still isn't enough.
-          # Since the permissive probe found the same by-uuid symlink
-          # (for the root partition, granted) created in ~11s with zero
-          # relevant denials, the obvious next thing to try was raising
-          # x-systemd.device-timeout (below) well past 10s -- but that
-          # ruled the timing-cliff theory out: even at 60s, the exact
-          # same single by-uuid device (41a21019..., which turns out to
-          # be the *root* filesystem's own UUID -- home/boot/var are
-          # plain fstab entries pointing at the same btrfs device, not
-          # genuinely separate partitions) never appears, every cycle,
-          # confirmed against the *complete* enforcing-boot console
-          # output this time (not console-only guessing): no new AVCs
-          # anywhere near it even with dontaudit still off and
-          # audit_backlog_limit=8192 from the probe step, and static
-          # policy review confirms udev_t already carries
-          # mls_file_read_all_levels/mls_file_write_all_levels/
-          # mls_process_write_down, and the base mls policy's own
-          # constraint file (policy/mls) explicitly includes blk_file in
-          # the same "read/getattr/execute" mlsconstrain that
-          # mlsfileread exempts, and exempts ioctl/lock entirely -- so
-          # this isn't a missing-rule gap in the classic sense; udev_t
-          # is already about as trusted as a domain can be for exactly
-          # this kind of raw-device read. That means the block (if it's
-          # SELinux-related at all) is happening somewhere `ausearch`
-          # can't see, or it isn't an SELinux permission problem at all
-          # but a genuine udev/blkid hang specific to MLS labels.
-          #
-          # RESOLVED (this round): the live monitor (mls-udev-monitor.service,
-          # kept in mls-cloudinit-fix/ for reference but no longer enabled
-          # below -- see the masking fix a few lines down for why) never
-          # actually got to show anything conclusive about a *second*
-          # uevent, because the real bug was one step earlier: this same
-          # boot's console showed selinux-autorelabel.service deciding yet
-          # another full relabel was needed and running `fixfiles -T 0
-          # restore` at ~t=6.5s, competing for I/O on the very same
-          # nvme0n1p3 device the "stuck" dev-nvme0n1p3.device unit lives
-          # on, for the whole ~64s window everything else was timing out
-          # in. Masking that service outright (below) turned out to be
-          # the actual fix: the very next run reached multi-user.target,
-          # started sshd, and reached network-online.target in under two
-          # minutes, with dev-nvme0n1p3.device no longer timing out at
-          # all. mls-udev-diag.service/mls-udev-monitor.service did their
-          # job (localizing the problem to *something* competing with
-          # nvme0n1p3, which is what pointed at the relabel-restart
-          # theory in the first place) and are retired now to cut console
-          # noise for the next investigation below -- not deleted, in
-          # case a future regression needs them again.
-
-          sed -i 's/^SELINUX=.*/SELINUX=enforcing/' /etc/selinux/config
-
-          # New evidence from the udevadm-diagnostic run: every enforcing
-          # attempt so far -- captured this time with a complete (not
-          # console-only) boot log -- shows selinux-autorelabel.service
-          # deciding *another* full "SELinux mls policy relabel is
-          # required" run is needed and starting `fixfiles -T 0 restore`
-          # at ~t=6.5s, with no "Finished" line anywhere in the rest of
-          # the captured boot (i.e. it may still be running, competing
-          # for I/O on the very same nvme0n1p3 device the stuck by-uuid
-          # symlink lives on, when everything else times out at t=64s).
-          # /.autorelabel should have been consumed by the very first
-          # relabel boot (several steps ago) and never reappear; check
-          # its state now, while SSH still works, so this is visible
-          # regardless of whether the upcoming enforcing boot succeeds:
-          echo "=== is /.autorelabel still present before the enforcing boot? (it shouldn't be) ==="
-          ls -la /.autorelabel 2>&1 || echo "/.autorelabel absent, as expected"
-          echo "=== did the original relabel service actually finish successfully? ==="
-          systemctl status selinux-autorelabel.service --no-pager -l 2>&1 || true
-          # Confirmed (with dontaudit off this time) that clearing the
-          # flag here wasn't enough: /.autorelabel is absent right here,
-          # every time this step runs, and yet the *next* boot's console
-          # still logs "SELinux mls policy relabel is required" and runs
-          # a full `fixfiles -T 0 restore` at ~t=6.5s on every single one
-          # of several power-cycled boots afterwards, each time re-mangling
-          # some files' SELinux user back to unconfined_u mid-boot (the
-          # same class of bug as the ld.so.cache fix above, just spreading
-          # to other files -- gconv-modules.cache showed up this round)
-          # and competing for I/O on the same nvme0n1p3 device that's
-          # already timing out. So something other than the flag file
-          # itself (most likely dracut's own early-boot SELINUXTYPE
-          # mismatch check, re-run fresh from a cold kernel on every
-          # boot) is what actually decides a relabel is needed -- clearing
-          # /.autorelabel doesn't touch that decision at all. Stop trying
-          # to out-race whatever recreates the need and just mask the
-          # service outright: prepare_for_mls_force_relabel() already
-          # did the equivalent full relabel once already (restorecon -RF /,
-          # in the "Reboot to apply MLS and Relabel" step above), so
-          # selinux-autorelabel.service running again here is pure
-          # redundant I/O, not a correctness requirement.
+          # selinux-autorelabel.service re-decides a relabel is needed on
+          # this boot regardless of /.autorelabel's state; running it
+          # again would just redundantly repeat the relabel
+          # prepare_for_mls_force_relabel() already did above.
           rm -f /.autorelabel
           systemctl mask selinux-autorelabel.service
-          systemctl status selinux-autorelabel.service --no-pager -l 2>&1 || true
 
-          # Previously (7d7eabf4) this dialed dontaudit/debug logging back
-          # off here, since two earlier rounds found nothing and the extra
-          # console I/O was itself a suspected contributor to instability.
-          # Since then the stale-relabel bug got fixed (confirmed gone in
-          # 04bf1a50's run) and NetworkManager-wait-online was cleared as a
-          # red herring (it stalls but never blocks anything) -- so this is
-          # a meaningfully cleaner baseline than either of those "found
-          # nothing" rounds. Worth one more look with full diagnostics on,
-          # specifically per the theory that this is a socket/netlink or
-          # udev-worker-communication denial that a plain permissive probe
-          # wouldn't reproduce (permissive doesn't actually retry/backoff
-          # the way a real enforcing-mode block does): keep dontaudit off
-          # and udevd debug logging live through the actual enforcing
-          # attempt this time, instead of reverting to defaults beforehand.
-          # Deferred with -N for the same reason as the Probe step's own
-          # `semanage dontaudit -N off` above: this phase's `tmt-reboot`
-          # (into enforcing, no less) is still ahead, so there's no need
-          # to risk a live reload racing against it.
-          semanage dontaudit -N off
-          echo "=== confirm debug configs are still in place for this attempt ==="
-          ls -la /etc/systemd/system/systemd-udevd.service.d/99-debug.conf \
-                 /etc/systemd/journald.conf.d/99-diag-console.conf 2>&1 || true
-          systemctl daemon-reload
+          # Raise the audit backlog so early-boot AVCs survive to be read
+          # by the verification step below instead of being dropped once
+          # the kernel's default 64-entry backlog fills.
+          grubby --update-kernel=ALL --args="audit_backlog_limit=8192"
 
-          # RESOLVED as of the masking fix above: the very next run after
-          # it reached multi-user.target, started sshd.service, and reached
-          # network-online.target all within ~111s (Startup finished in
-          # 811ms (kernel) + 2.272s (initrd) + 1min 48.529s (userspace) --
-          # console-verified, not guessed) -- dev-nvme0n1p3.device no
-          # longer times out at all. That's the boot hang this whole
-          # investigation was chasing, fixed for real.
-          #
-          # But acceptance criterion 1 ("boots reliably to a working SSH
-          # session") still isn't met: tmt's own reconnect never once
-          # succeeded across four ~5-minute power-cycles of the guest
-          # (still the same pre-existing, external, tmt/Artemis-independent
-          # cadence noted above -- unrelated to this fix), and tmt-run.log
-          # shows exactly why -- not an SSH handshake/auth failure, but a
-          # bare TCP-level failure on *every* attempt:
-          #   ssh: connect to host <ip> port 22: Connection timed out
-          # That message comes from the client's own connect() call, before
-          # any SSH protocol exchange even starts, and it's the same result
-          # whether the attempt happens to fall inside the guest's
-          # confirmed-live window or not. Since the same fixed IP accepted
-          # SSH connections without issue for every earlier *permissive*
-          # reboot in this exact run (see the rsync/tmt-topology-copy
-          # activity right before this step), something specific to this
-          # enforcing boot -- not a general Testing Farm/network problem --
-          # is making the guest's SSH port externally unreachable even
-          # though sshd starts successfully *inside* it. ausearch/dontaudit
-          # off shows nothing network-related, so this doesn't look like an
-          # SELinux denial either. Leading theories, in rough order of
-          # suspicion: (a) a missing/late default route -- inbound SYNs
-          # could still arrive and get a SYN-ACK queued, but with no route
-          # back out that SYN-ACK never reaches the client, which looks
-          # exactly like a client-side connect timeout; (b) a firewall
-          # (nftables/firewalld) ruleset that ends up default-deny for a
-          # window, or permanently, on this boot specifically; (c) sshd
-          # somehow not actually bound where expected despite logging
-          # "Started". A loopback self-connect from *inside* the guest
-          # would distinguish (c) from (a)/(b) instantly, and doesn't need
-          # external reachability at all. Added mls-net-diag.service to
-          # test all three at once, forced to the console every 15s for
-          # 5 minutes (spans a full power-cycle) since SSH is exactly
-          # what's unavailable to check this any other way.
-          cp $TMT_TREE/tmt/mls-cloudinit-fix/mls-net-diag.service \
-              /etc/systemd/system/mls-net-diag.service
-          systemctl daemon-reload
-          systemctl enable mls-net-diag.service
-
-          # Ran it (Testing Farm eb2f649e): the loopback self-connect
-          # answered (c) immediately -- sshd accepts on 127.0.0.1:22
-          # every single one of 20+ iterations across the full 5-minute
-          # window, so sshd itself is fine. But `ip route show` came back
-          # completely empty and `ip -4 addr show` showed only lo, which
-          # would seem to confirm theory (a) (no route/address at all) --
-          # except the *same* boot's console also shows the diagnostic's
-          # own `ss`/`systemctl` calls failing outright ("Cannot open
-          # netlink socket: Permission denied", "Failed to retrieve unit
-          # state: Access denied", the latter with an explicit
-          # `scon=initrc_t tcon=init_t ... perm=status ... Permission
-          # denied`). A plain ad hoc systemd service with no configured
-          # label lands in initrc_t under mls, which the stock policy
-          # doesn't grant NETLINK_ROUTE socket or systemd-status query
-          # access to -- so the empty `ip route`/`ip addr` output is (most
-          # likely) this diagnostic being blind, not evidence the route
-          # table is actually empty. Mark initrc_t permissive for this
-          # probe only (same pattern already used for the generator-domain
-          # probe above) so the *next* run's mls-net-diag.service output
-          # can actually be trusted either way.
-          semanage permissive -a initrc_t
-
-          # Ran it again (Testing Farm b5719bd8) with initrc_t now
-          # permissive, so this round's mls-net-diag output can finally be
-          # trusted: `ip -4 -o addr show`/`ip route show` came back
-          # completely empty (lo only) across all 20 iterations spanning
-          # the whole 5-minute window -- not blind this time (no new
-          # netlink-related AVCs), so the guest genuinely has no non-loopback
-          # address or route at all, confirming theory (a) for real.
-          #
-          # Cross-referencing the full console log (not just mls-net-diag's
-          # own output) found the actual mechanism, and it's bigger than a
-          # missing route: dev-nvme0n1p2.device AND dev-nvme0n1p3.device
-          # *both* still time out every boot (contradicting the "fixed for
-          # real" note above -- that was one lucky run, not a real fix), but
-          # boot now survives it because nothing hard-requires them. More
-          # importantly, dev-ttyS0.device and dev-zram0.device -- a serial
-          # console and an in-memory swap device, nothing to do with disks,
-          # blkid, or nvme at all -- *also* time out in the exact same
-          # ~45-second window right after systemd-udevd starts, during which
-          # udevd's own debug log (systemd-udevd.service.d/99-debug.conf)
-          # shows zero device/worker activity whatsoever. That rules out an
-          # nvme- or blkid-specific bug: this is udev's coldplug event
-          # processing stalling *system-wide*, for every device type, for
-          # ~45-65s immediately after udevd starts, on every single
-          # enforcing boot. Most device units happen to survive it (their
-          # dependents tolerate the delay or the timeout isn't fatal to
-          # boot), but the network interface does not: the kernel brings up
-          # `ena 0000:00:05.0` and renames it to ens5 exactly once, during
-          # the initrd stage (~t=5.9s, before switch-root, which is also
-          # when cloud-init's initrd-stage network bring-up briefly gives it
-          # 172.31.19.49 to fetch instance metadata) -- but NetworkManager
-          # in the *main* OS, for the entire boot, only ever logs "(lo): new
-          # Loopback device" and never once logs discovering ens5 at all.
-          # No AVC (permissive or enforcing, dontaudit already off) implicates
-          # udev_t or NetworkManager_t specifically, so this doesn't look like
-          # a classic missing-TE-rule gap either -- but that doesn't rule out
-          # a dontaudit-independent enforcement path (e.g. a slow/blocked
-          # avc_has_perm() computation under MLS's s0-s15:c0.c1023 range that
-          # never generates a denial because the operation isn't actually
-          # denied, just pathologically delayed). Mark both permissive, same
-          # pattern as initrc_t above, to test that theory directly: if the
-          # coldplug stall and/or ens5 discovery clear up with these
-          # permissive, that's strong evidence MLS-specific SID/context
-          # computation overhead for these two heavily-invoked domains is the
-          # real mechanism, not a discrete missing rule.
-          #
-          # First attempt (b98aa32f) used a live `semanage permissive -a`
-          # for both, same as the initrc_t precedent above. That precedent
-          # is safe for initrc_t (an ad hoc oneshot diagnostic domain with
-          # no long-running daemon), but NetworkManager_t is the domain of
-          # the *actively running* NetworkManager process that owns the
-          # network connection this very SSH session (and the upcoming
-          # tmt-reboot handshake) depends on. `semanage permissive -a`
-          # without `-n` does an immediate rebuild-and-reload of the whole
-          # mls store into the live kernel, and Testing Farm runs
-          # 2fc81438/548f9fc8/0a61c365 all confirm the fallout: every one
-          # died with "Failed to push workdir to the guest" / "Plugin
-          # raised an unhandled exception" *immediately* after this step's
-          # tmt-reboot call -- too fast to be a real boot timeout, and the
-          # same failure the semodule-install comment below already warned
-          # about for exactly this reason ("the guest broke immediately
-          # ... because the live kernel was suddenly enforcing MLS
-          # semantics no running context actually satisfied"). Marking
-          # NetworkManager_t's own domain permissive live, on a session
-          # NetworkManager itself is carrying, is the same class of
-          # self-inflicted disruption. `-n` defers the store update to disk
-          # without an immediate reload -- harmless here since a
-          # `tmt-reboot` is the very next line anyway, so the kernel picks
-          # up the change fresh on that reboot instead of hot-reloading
-          # into the live, still-in-use session.
-          semanage permissive -n -a udev_t
-          semanage permissive -n -a NetworkManager_t
-
-          # Force a full, fresh local -> init -> config -> final cloud-init
-          # run under enforcing on the next boot (see the "Reset cloud-init's
-          # per-instance state" comment in the first prepare step -- without
-          # this, cloud-init would just see the instance as already
-          # provisioned and skip everything).
           cloud-init clean --logs
-
-          # IMPORTANT: this specific reboot -- the one that actually flips
-          # the kernel from permissive to *enforcing* for real -- kept
-          # failing tmt's own post-reboot reconnect check with a bare,
-          # uncaught `AssertionError` inside tmt itself (tmt/guest/
-          # __init__.py's BootMarkBootTime.fetch(): `assert stdout` on the
-          # output of `cat /proc/stat`), reproduced deterministically across
-          # four separate Testing Farm runs (099cfd5b's own validation:
-          # cbcaa1b7/5255007c/516aa7fe/57df8eac), always at this exact step,
-          # never at the earlier "Reboot to apply MLS and Relabel" or
-          # "Probe" steps' own tmt-reboot calls. Evidence gathered directly
-          # from each run's tmt-run debug log: tmt's very first post-reboot
-          # poll (fixed 30s after the reboot command returns) sometimes gets
-          # a clean, expected SSH connection failure (rc 255, correctly
-          # retried) but *just as often* gets `cat /proc/stat` reporting
-          # success (rc 0) with zero bytes of stdout -- root-caused as the
-          # poll's SSH command landing on the *old, pre-reboot* sshd session
-          # in the narrow window while it's already being torn down by the
-          # plain `reboot`/systemd shutdown sequence (which stops sshd only
-          # partway through, not first): the remote `cat` process gets
-          # killed by the shutdown before it can write anything or before
-          # sshd can relay a real exit-status message, and OpenSSH's client
-          # falls back to reporting a bare "channel closed" as exit 0 rather
-          # than surfacing the interruption -- which tmt's own `assert
-          # stdout` (only guards against RunError, not this exit-0-but-empty
-          # case) doesn't handle. Console log cross-reference confirms this
-          # timing is physically impossible to be a genuine *new*,
-          # fully-booted enforcing session that fast: sshd doesn't even
-          # start until well past 130s into a fresh boot in every captured
-          # console log, but tmt's very first poll landing on this ambiguous
-          # state fires at just +30s.
-          #
-          # Can't patch tmt itself, so work around it here: use `-c` to
-          # replace the default bare `reboot` with a detached
-          # (setsid + disowned, so *our own* ssh channel for this command
-          # still returns cleanly and immediately) sequence that stops sshd
-          # outright *before* triggering the actual reboot. That turns the
-          # ambiguous "old session dying mid-command" window into a plain,
-          # unambiguous connection-refused for any poll that lands early --
-          # exactly the case tmt's own `except tmt.utils.RunError` already
-          # retries correctly -- instead of the empty-stdout-but-success
-          # case it doesn't.
-          #
-          # RESULT (Testing Farm 7d413da3): this custom command was picked
-          # up and ran exactly as intended (tmt-run.log confirms "Soft
-          # reboot using command 'setsid sh -c ...'" and the sshd-stop
-          # sequence actually executing), yet the *identical* failure
-          # reproduced at the *identical* timing -- tmt's first post-reboot
-          # poll, fixed at +30s, again got `cat /proc/stat` reporting
-          # success with zero bytes of output. That rules out the "old
-          # sshd session dying mid-command" theory outright: sshd was
-          # already stopped, on purpose, before the actual reboot(8) call
-          # even fired, so there was no live session left for a new
-          # connection to land on. A genuinely fresh connection attempt at
-          # +30s against a guest that's either still down (should be
-          # connection-refused) or impossibly-fast-booted (console logs
-          # across every captured run show sshd never starts before ~130s)
-          # simply cannot explain a clean "success" full round-trip in
-          # under one second. That points to the empty response being
-          # manufactured client-side -- inside tmt's own SSH invocation or
-          # its ControlMaster multiplexing, on the Testing Farm worker
-          # itself -- rather than anything happening on the guest at all,
-          # i.e. a genuine tmt/OpenSSH tooling bug outside this plan's (or
-          # selinux-policy's) control. This has now reproduced 5/5 across
-          # every variation tried (bare `reboot`, and this hardened
-          # sshd-stop variant), always at this exact step, never at the
-          # plan's two earlier tmt-reboot calls. Leaving the hardened
-          # command in place (it's harmless and correct even though it
-          # didn't fix this), but not chasing further guest-side mitigation
-          # -- the next real lever, if this needs to be unblocked, is a fix
-          # or version change on the tmt/Testing Farm side, not mls.fmf.
-          tmt-reboot -t 1200 -c "setsid sh -c 'sleep 1; systemctl stop sshd.service; sleep 1; systemctl reboot' </dev/null >/dev/null 2>&1 &"
+          sed -i 's/^SELINUX=.*/SELINUX=enforcing/' /etc/selinux/config
+          tmt-reboot -t 1200
       fi
 
-  - name: Investigate the enforcing-boot disk-by-uuid timeout (udev/blkid MLS theory)
+  - name: Verify enforcing-mode boot
     how: shell
     script: |
-      if [ "${TEST_ENFORCING:-1}" = "1" ]; then
-          echo "=== SELinux status right after the enforcing-switch reboot ==="
-          getenforce 2>&1 || true
-          sestatus 2>&1 || true
+      echo "=== SELinux status ==="
+      sestatus
 
-          echo "=== did sshd/networking come up normally this boot? ==="
-          systemctl status sshd.service --no-pager 2>&1 || true
-          ip addr show 2>&1 || true
-
-          echo "=== did local-fs.target / basic.target / multi-user.target fail again this boot? ==="
-          systemctl status local-fs.target basic.target multi-user.target --no-pager 2>&1 || true
-          systemctl list-jobs 2>&1 || true
-          systemctl --failed --no-pager 2>&1 || true
-
-          echo "=== restore fstab (nofail was diagnostic-only) ==="
-          if [ -f /etc/fstab.pre-nofail-probe ]; then
-              mv /etc/fstab.pre-nofail-probe /etc/fstab
-          fi
-
-          echo "=== full AVC list, this boot (should now be complete: audit_backlog_limit=8192) ==="
-          ausearch -m AVC,USER_AVC -ts boot 2>&1 || true
-
-          echo "=== specifically: anything denied on a fixed_disk_device_t / blk_file, and who ==="
-          ausearch -m AVC -ts boot 2>&1 | grep -E 'blk_file|fixed_disk_device_t' || echo "none found"
-
-          echo "=== is udev_t (or whatever ran blkid) actually mlsfileread-trusted in the *loaded* policy? ==="
-          seinfo -a mlsfileread -x 2>&1 | grep -E 'udev_t|fsadm_t|lvm_t' || echo "none of udev_t/fsadm_t/lvm_t carry mlsfileread in the loaded policy"
-
-          echo "=== what actually ran systemd-udevd / blkid, and in which domain ==="
-          ps -eZ 2>&1 | grep -E 'udev|blkid' || true
-          journalctl -b -u systemd-udevd --no-pager 2>&1 || true
-
-          echo "=== do the by-uuid symlinks exist now (after nofail let boot continue)? ==="
-          ls -la /dev/disk/by-uuid/ 2>&1 || true
-          for u in $(ls /dev/disk/by-uuid/ 2>/dev/null); do
-              blkid /dev/disk/by-uuid/"$u" 2>&1 || true
-          done
-
-          echo "=== try running blkid directly against the raw disk, see what it hits live ==="
-          lsblk -no NAME,UUID 2>&1 || true
-      fi
+      echo "=== AVC/USER_AVC denials this boot ==="
+      ausearch -m AVC,USER_AVC -ts boot 2>&1 || echo "no AVCs this boot"
 
 execute:
   how: tmt
   script: |
     echo "=== SELinux status ==="
-    getenforce
     sestatus
 
-    echo "=== cloud-init result from this boot ==="
+    echo "=== cloud-init result ==="
     cloud-init status --long || true
 
-    echo "=== cloud-init unit activity from this boot ==="
-    journalctl -b -u 'cloud-init*' --no-pager || true
-
-    # Earlier runs showed the main /usr/bin/cloud-init binary correctly
-    # transitioning into cloud_init_t. But the cloud-init-generator systemd
-    # generator (/usr/lib/systemd/system-generators/cloud-init-generator --
-    # NOTE: earlier versions of this diagnostic had the wrong filename,
-    # "cloud-init.local-generator", which never existed, so this check was
-    # silently a no-op) is observed running as scontext=initrc_t instead of
-    # cloud_init_t, even though cloudform.fc already matches it via the
-    # same `cloud-init.*` pattern as the main binary. That process is also
-    # seen hitting the already-known /etc/ld.so.cache unlabeled_t denial
-    # in the very same boot -- suggesting this generator is just another
-    # casualty of the same relabel-race bug (some files not getting their
-    # real label applied before early-boot processes need them), rather
-    # than a distinct selinux-policy .te gap. These checks confirm that:
-    #   1) whether the generator's on-disk label actually matches what
-    #      cloudform.fc expects (cloud_init_exec_t) or not, and
-    #   2) whether a transition rule exists from *either* init_t or
-    #      initrc_t (systemd may invoke generators from either, depending
-    #      on version/config) to cloud_init_t, in case the label is fine
-    #      but the transition is scoped to the wrong source domain.
-    echo "=== cloud-init entrypoint labels: on-disk vs policy-expected ==="
-    ls -Z /usr/bin/cloud-init /usr/lib/systemd/system-generators/cloud-init-generator 2>&1 || true
-    matchpathcon -V /usr/bin/cloud-init /usr/lib/systemd/system-generators/cloud-init-generator /etc/cloud/cloud.cfg.d/99-preserve-ssh-host-keys.cfg /etc/ld.so.cache 2>&1 || true
-    restorecon -nv /usr/bin/cloud-init /usr/lib/systemd/system-generators/cloud-init-generator /etc/cloud/cloud.cfg.d/99-preserve-ssh-host-keys.cfg /etc/ld.so.cache 2>&1 || true
-
-    echo "=== does the loaded MLS policy define an init_t or initrc_t -> cloud_init_t transition? ==="
-    sesearch -A -s init_t -t cloud_init_exec_t -c file -p execute 2>&1 || true
-    sesearch -T -s init_t -t cloud_init_exec_t -c process 2>&1 || true
-    sesearch -A -s initrc_t -t cloud_init_exec_t -c file -p execute 2>&1 || true
-    sesearch -T -s initrc_t -t cloud_init_exec_t -c process 2>&1 || true
-
-    echo "=== actual domain cloud-init is running in (should be cloud_init_t) ==="
+    echo "=== cloud-init running domain (expected: cloud_init_t) ==="
     ps -eZ | grep -i cloud || true
 
-    echo "=== CAPTURED AVC DENIALS (this boot) ==="
-    ausearch -m AVC,USER_AVC -ts boot || true
+    echo "=== AVC/USER_AVC denials this boot ==="
+    ausearch -m AVC,USER_AVC -ts boot || echo "no AVCs this boot"
 
-    echo "=== Suggested policy for observed denials ==="
-    ausearch -m AVC -ts boot | audit2allow || true
-
-    # Relabel-race investigation: does /.autorelabel even get consumed on
-    # this image? systemd/dracut's autorelabel handling deletes the flag
-    # file itself once the relabel completes -- if it's still present
-    # after boot, the relabel service never ran at all, which would
-    # explain the unlabeled_t denials far better than a race between
-    # relabel and early boot units.
-    echo "=== is /.autorelabel still present after boot? (it should have been consumed) ==="
-    ls -la /.autorelabel 2>&1 || echo "/.autorelabel absent (consumed, as expected)"
-
-    echo "=== does a selinux-autorelabel(-mark).service unit exist / did it run? ==="
-    systemctl list-unit-files 'selinux-autorelabel*' 2>&1 || true
-    systemctl status selinux-autorelabel.service 2>&1 || true
-    journalctl -b -u 'selinux-autorelabel*' --no-pager -o short-monotonic 2>&1 || true
-
-    echo "=== full early-boot unit timeline, for correlating relabel vs cloud-init start ==="
-    journalctl -b --no-pager -o short-monotonic | head -200 || true
-
-    echo "=== exact epoch timestamps: first unlabeled_t AVC vs cloud-init-local.service start ==="
-    ausearch -m AVC -ts boot 2>/dev/null | grep -m1 unlabeled_t || true
-    journalctl -b -u cloud-init-local.service --no-pager -o short-precise 2>&1 | head -5 || true
+    echo "=== audit2allow suggestions for any denials above ==="
+    ausearch -m AVC -ts boot 2>/dev/null | audit2allow || true

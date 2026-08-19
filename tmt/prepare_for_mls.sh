@@ -64,75 +64,20 @@
 # has to live in a call/step that only actually executes post-reboot).
 
 prepare_for_mls_configure() {
-    # IMPORTANT: SELINUXTYPE must be switched to mls *before* the semanage
-    # login mapping below, not after. `semanage` always operates on whatever
-    # store /etc/selinux/config's SELINUXTYPE currently names -- it has no
-    # awareness of which policy the *kernel* is actually running, but it very
-    # much cares what this file says at the moment it's invoked. Running the
-    # login mapping first (as this used to do) silently writes "root ->
-    # sysadm_u" into the still-active *targeted* store's login database,
-    # never touching mls's own (separate) one at all. The mls store's own
-    # stock default then applies instead: root lands as the distinct "root"
-    # SELinux user's *first* listed role, which resolves to staff_r/staff_t,
-    # not sysadm_r/sysadm_t.
-    #
-    # Confirmed via the permissive-mode dontaudit-off probe: every root SSH
-    # session after the switch to mls reports `id -Z` =
-    # root:staff_r:staff_t:s0-s15:c0.c1023, and permissive-but-logged AVCs
-    # show staff_t denied `read`/`open` on /root/.bashrc (admin_home_t) and
-    # denied `write`/`create`/`rename` on the tmt workdir tree (var_t) --
-    # exactly the operations tmt's own rsync-based script push depends on.
-    # Under permissive these are merely logged and everything still works,
-    # which is why every earlier permissive-mode boot in this investigation
-    # looked completely healthy. The very first real *enforcing* boot after
-    # the "Switch to Enforcing" step's own reboot hits these for real:
-    # tmt's reconnect-and-push cycle dies immediately with
-    # "bash: /root/.bashrc: Permission denied" and an rsync mkstemp EACCES
-    # under the workdir tree -- both a byte-for-byte match for the denials
-    # already logged (harmlessly) under permissive. This is exactly the
-    # "works under permissive, breaks under enforcing" signature of a real
-    # enforced AVC, not a coincidental non-SELinux bug: staff_t is
-    # deliberately a more confined role than sysadm_t under mls (regular
-    # admin-track users are meant to `newrole` up to sysadm_r for real
-    # administration), so it was never going to have blanket admin_home_t/
-    # var_t access -- root just never actually got mapped to sysadm_u in the
-    # store that matters. Fixed by reordering: set SELINUXTYPE=mls first, so
-    # the login mapping below lands in the correct (mls) store, and root
-    # actually gets sysadm_u/sysadm_r/sysadm_t once the switch takes effect.
-    #
-    # IMPORTANT (regression from the reordering above, root-caused via a
-    # diagnostic-wrapped run after the reorder made this step start dying
-    # deterministically in ~8s with the whole SSH session breaking outright
-    # -- "/bin/bash: Permission denied" followed by rsync's connection
-    # closing with 0 bytes received, i.e. the remote shell itself couldn't
-    # even exec, not a plain file-permission error): `semanage login`, like
-    # every other semanage subcommand, defaults to an immediate rebuild AND
-    # RELOAD of whichever store SELINUXTYPE currently names into the *live*
-    # kernel unless told not to. At this exact point SELINUXTYPE now says
-    # "mls" (just set above) but SELINUX= is still whatever this base image
-    # booted with (Fedora's default: enforcing, under the *targeted*
-    # policy) -- prepare_for_mls_configure() doesn't flip SELINUX to
-    # permissive itself; that happens one line later in the caller. So the
-    # unguarded `semanage login -m` here force-loads a brand-new, freshly
-    # built *mls* policy live into a kernel that is both (a) still running
-    # the old targeted policy's semantics for every already-running process,
-    # including this very SSH session, and (b) still enforcing for real.
-    # The instant that load lands, this shell's targeted-policy context
-    # (something like unconfined_u, which isn't even a valid identity under
-    # mls) has no valid mapping in the new policy at all, and every
-    # subsequent syscall -- including the next command's exec(/bin/bash)
-    # -- gets denied for real, not just logged. This is the exact same
-    # live-reload-vs-running-session hazard already fixed for `semodule -n
-    # -i cloudform.pp`, `semanage permissive -n -a`, and `semanage dontaudit
-    # -N off` elsewhere in this plan; it was simply missed here because the
-    # reorder that exposed it was itself the very fix for the staff_t bug
-    # above. `-N`/`--noreload` defers the change to disk without touching
-    # the live kernel, exactly like those other call sites -- harmless
-    # here since the whole point of this function is to reboot into the
-    # freshly built mls store shortly after anyway (prepare_for_mls_reboot,
-    # called by every caller right after this).
+    # SELINUXTYPE must flip to mls before the login mapping below: semanage
+    # always operates on whatever store SELINUXTYPE currently names, with no
+    # awareness of what policy the kernel is actually running. Mapping first
+    # would silently land in the still-active targeted store instead, and
+    # mls's own stock default then puts root in staff_r/staff_t (deliberately
+    # more confined -- real admin work means `newrole` to sysadm_r) rather
+    # than sysadm_r/sysadm_t.
     sed -i 's/^SELINUXTYPE=.*/SELINUXTYPE=mls/' /etc/selinux/config
 
+    # -N: defer the store rebuild/reload to the next real policy load (the
+    # reboot below) instead of hot-loading a freshly built mls policy into a
+    # kernel that's still running -- and still enforcing -- the old targeted
+    # one, which would deny this very shell's own next syscalls under a
+    # context (e.g. unconfined_u) that isn't valid under mls at all.
     semanage login -N -m -s sysadm_u root
 
     touch /.autorelabel

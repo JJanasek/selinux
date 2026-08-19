@@ -1,60 +1,11 @@
 policy_module(mlssshpipes, 1.0)
 
-########################################
-#
-# ROOT CAUSE (found via permissive-mode ausearch, dontaudit off, on
-# selinux-policy-mls-44.6-1.fc44): every attempt to reconnect over SSH
-# right after the switch to real MLS enforcing failed with tmt's own
-# post-reboot boot-mark probe (`cat /proc/stat`) reporting a clean,
-# successful exit but with completely empty stdout -- previously
-# suspected to be a tmt/OpenSSH client-side bug (see mls.fmf's "Switch
-# to Enforcing" step history), since it reproduced identically whether
-# or not the old sshd session was forcibly stopped before rebooting.
-#
-# Re-running the same probe under *permissive* with dontaudit off (per
-# request) surfaced the real denial hiding behind that symptom:
-#
-#   avc: denied { read } for comm="bash" path="pipe:[9762]" dev="pipefs"
-#       scontext=sysadm_u:sysadm_r:sysadm_t:s0-s15:c0.c1023
-#       tcontext=system_u:system_r:sshd_session_t:s0-s15:c0.c1023
-#       tclass=fifo_file permissive=1
-#   avc: denied { write } for comm="bash" path="pipe:[9763]" ... (same
-#       scontext/tcontext, tclass=fifo_file)
-#   avc: denied { ioctl } for comm="bash" path="pipe:[9762]" ...
-#   avc: denied { getattr } for comm="cat" path="pipe:[9763]" ...
-#
-# i.e. the login shell (and the command it execs, here literally
-# `cat`) is denied read/write/ioctl/getattr on the very pipes OpenSSH's
-# newer, privilege-separated sshd-session process hands it as
-# stdin/stdout. Under permissive this is silently tolerated (data still
-# flows), which is exactly why permissive mode "has no problem" while
-# enforcing does -- this is not a permissive-vs-enforcing tooling
-# artifact, it's a real TE gap that only bites once actually enforced.
-# Under real enforcement the shell/command can't read its stdin or
-# write its stdout at all: the command still runs and still exits, but
-# no bytes ever cross the pipe back to sshd, which is indistinguishable
-# from tmt's/OpenSSH's point of view from a clean success with empty
-# output -- exactly the symptom chased (and previously mis-attributed
-# to tmt) across many prior Testing Farm runs.
-#
-# This is a known upstream gap, already fixed in git (not yet in
-# selinux-policy-mls-44.6-1.fc44, the version this compose ships):
-# fedora-selinux/selinux-policy commit a589b1b5 ("Allow all domains to
-# use inherited sshd-session pipes", resolving
-# fedora-selinux/selinux-policy#3286) added `ssh_session_rw_pipes(domain)`
-# next to the pre-existing `ssh_rw_pipes(domain)` in
-# policy/modules/kernel/domain.te -- i.e. this exact grant, just not
-# yet domain-wide for every confined role (only passwd_t had it
-# before). Under targeted policy this gap is invisible because root's
-# interactive session there is unconfined_t, which bypasses TE checks
-# entirely; MLS is what actually exercises this path, via sysadm_t.
-#
-# Backporting only the missing grant locally (identical RHS to
-# upstream's own fix) rather than pulling in a newer selinux-policy
-# build, since everything else this plan depends on is already
-# validated against 44.6-1.fc44.
-#
-########################################
+# Backport of fedora-selinux/selinux-policy commit a589b1b5 (fixing
+# fedora-selinux/selinux-policy#3286), not yet in
+# selinux-policy-mls-44.6-1.fc44: lets a confined domain read/write the
+# pipes OpenSSH's privilege-separated sshd-session hands a login shell as
+# stdin/stdout. Needed for sysadm_t (root's mls login domain); invisible
+# under targeted since root's session there is unconfined_t.
 
 gen_require(`
 	attribute domain;
