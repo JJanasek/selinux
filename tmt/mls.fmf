@@ -1152,6 +1152,35 @@ prepare:
           # exactly the case tmt's own `except tmt.utils.RunError` already
           # retries correctly -- instead of the empty-stdout-but-success
           # case it doesn't.
+          #
+          # RESULT (Testing Farm 7d413da3): this custom command was picked
+          # up and ran exactly as intended (tmt-run.log confirms "Soft
+          # reboot using command 'setsid sh -c ...'" and the sshd-stop
+          # sequence actually executing), yet the *identical* failure
+          # reproduced at the *identical* timing -- tmt's first post-reboot
+          # poll, fixed at +30s, again got `cat /proc/stat` reporting
+          # success with zero bytes of output. That rules out the "old
+          # sshd session dying mid-command" theory outright: sshd was
+          # already stopped, on purpose, before the actual reboot(8) call
+          # even fired, so there was no live session left for a new
+          # connection to land on. A genuinely fresh connection attempt at
+          # +30s against a guest that's either still down (should be
+          # connection-refused) or impossibly-fast-booted (console logs
+          # across every captured run show sshd never starts before ~130s)
+          # simply cannot explain a clean "success" full round-trip in
+          # under one second. That points to the empty response being
+          # manufactured client-side -- inside tmt's own SSH invocation or
+          # its ControlMaster multiplexing, on the Testing Farm worker
+          # itself -- rather than anything happening on the guest at all,
+          # i.e. a genuine tmt/OpenSSH tooling bug outside this plan's (or
+          # selinux-policy's) control. This has now reproduced 5/5 across
+          # every variation tried (bare `reboot`, and this hardened
+          # sshd-stop variant), always at this exact step, never at the
+          # plan's two earlier tmt-reboot calls. Leaving the hardened
+          # command in place (it's harmless and correct even though it
+          # didn't fix this), but not chasing further guest-side mitigation
+          # -- the next real lever, if this needs to be unblocked, is a fix
+          # or version change on the tmt/Testing Farm side, not mls.fmf.
           tmt-reboot -t 1200 -c "setsid sh -c 'sleep 1; systemctl stop sshd.service; sleep 1; systemctl reboot' </dev/null >/dev/null 2>&1 &"
       fi
 
