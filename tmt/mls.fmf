@@ -323,6 +323,47 @@ description: |
     treats a5c7dfde's login mapping bug as the actual root cause this plan
     was chasing.
 
+    That "tmt/OpenSSH tooling bug, not policy" conclusion was wrong, and a
+    closer look at the *permissive*-mode probe's own dontaudit-off ausearch
+    dump (the same one already captured every run, just not scrutinized for
+    this) proves it: right in the middle of the very SSH login that
+    tmt/Testing Farm's worker makes to run each command, dontaudit-off
+    surfaces `sysadm_u:sysadm_r:sysadm_t` denied `read`/`ioctl` on one
+    inherited pipe and `write` on another, plus `cat` itself (comm="cat")
+    denied `getattr` on its own stdout pipe -- all four `tclass=fifo_file`,
+    all four `tcontext=system_u:system_r:sshd_session_t` (OpenSSH's newer,
+    privilege-separated per-session process). That is: the login shell (and
+    whatever it execs -- here literally `cat`, tmt's own boot-mark probe)
+    is denied access to the very pipes sshd-session hands it as stdin/
+    stdout. Under permissive this is silently tolerated and data still
+    flows, which is exactly why every earlier permissive boot looked
+    completely healthy on this front; under real enforcement the command
+    still runs and still exits (0), but literally no bytes can cross back
+    over those pipes to sshd -- indistinguishable, from tmt's or any SSH
+    client's point of view, from "clean success with empty output". That is
+    a byte-for-byte match for the exact symptom above, three runs running,
+    always at exactly this reboot (the first one that's genuinely
+    enforcing) and never at the plan's other reboots (which never exercise
+    a *freshly re-authenticated* SSH session under real mls enforcement
+    the way this one does).
+
+    This is a real, already-known upstream gap: fedora-selinux/selinux-policy
+    commit a589b1b5 ("Allow all domains to use inherited sshd-session
+    pipes", fixing fedora-selinux/selinux-policy#3286) added
+    `ssh_session_rw_pipes(domain)` next to the pre-existing
+    `ssh_rw_pipes(domain)` in policy/modules/kernel/domain.te -- i.e.
+    exactly this grant, previously only wired up for passwd_t. It isn't in
+    selinux-policy-mls-44.6-1.fc44 (what this compose ships) yet. Under
+    targeted policy this gap is invisible because root's interactive
+    session there is unconfined_t, which bypasses TE checks entirely --
+    mls is what actually exercises this path, via sysadm_t, which is
+    exactly why "permissive has no problem and enforcing has": it was never
+    a permissive-vs-enforcing tooling quirk, it's a real TE gap that only
+    an actually-confined, actually-enforcing session can hit. Backported
+    locally as its own tiny module (mls-ssh-pipes-fix/mlssshpipes.te,
+    built and loaded the same way as the cloudform module) rather than
+    pulling in a newer selinux-policy build.
+
 prepare:
   - name: Install and configure MLS policy in Permissive mode
     how: shell
@@ -402,7 +443,7 @@ prepare:
       # units.
       cloud-init clean --logs
 
-  - name: Build and load cloud-init policy fix (JJanasek/selinux-policy@mls-enable-cloud-init)
+  - name: Build and load cloud-init and sshd-session-pipes policy fixes
     how: shell
     script: |
       dnf install -y policycoreutils-devel
@@ -446,6 +487,20 @@ prepare:
 
       make -f /usr/share/selinux/devel/Makefile cloudform.pp
 
+      # Second, unrelated fix built the same way: sysadm_t (root's actual
+      # login domain under mls) is missing read/write/ioctl/getattr on
+      # pipes inherited from OpenSSH's sshd_session_t, a real upstream gap
+      # (fedora-selinux/selinux-policy commit a589b1b5, not yet in
+      # selinux-policy-mls-44.6-1.fc44) that only bites once mls is
+      # actually enforcing -- see this file's description for the full
+      # ausearch evidence and how it explains tmt's post-"Switch to
+      # Enforcing" reconnect failures. `domain` (the attribute every
+      # confined process type carries) and sshd_session_t both already
+      # exist in the stock mls store, so this needs no new interface
+      # headers, unlike cloudform.pp above.
+      cp $TMT_TREE/tmt/mls-ssh-pipes-fix/mlssshpipes.te .
+      make -f /usr/share/selinux/devel/Makefile mlssshpipes.pp
+
       # IMPORTANT: -n / --noreload. `semodule -i` operates on the store
       # named by /etc/selinux/config's SELINUXTYPE -- which we already set
       # to "mls" in the previous prepare step -- but by *default* it also
@@ -463,8 +518,8 @@ prepare:
       # because the live kernel was suddenly enforcing MLS semantics no
       # running context actually satisfied. -n keeps this an entirely
       # offline edit of the (currently inactive) mls store.
-      semodule -n -i cloudform.pp
-      semodule -l | grep '^cloudform\b'
+      semodule -n -i cloudform.pp mlssshpipes.pp
+      semodule -l | grep -E '^(cloudform|mlssshpipes)\b'
 
   - name: Reboot to apply MLS and Relabel
     how: shell
