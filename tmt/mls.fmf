@@ -185,6 +185,58 @@ description: |
     work above, and this diagnostic-only workaround outlived its
     purpose once that landed.
 
+    That "removed for good" turned out to be premature: the very next
+    run after that hit the disk-by-uuid hang again, now sharpened to a
+    single device (dev-nvme0n1p3.device, the root EBS partition -- home/
+    var/boot are plain fstab entries on that same device, not separate
+    partitions) that never becomes "ready" a second time in the main
+    OS's freshly-started udevd, even though it's already mounted as
+    root via the initrd's udevd. Neither by-uuid-vs-raw-device-path nor
+    a wider (60s) device-timeout changed anything, and static review
+    showed udev_t is already about as MLS-trusted as a domain can be
+    for this. Two live diagnostics (mls-udev-diag.service,
+    mls-udev-monitor.service) were added to get real evidence without
+    needing SSH; the monitor initially shipped with a systemd unit-file
+    bug (unescaped `%s`/`%3N` in its ExecStart) that was fixed and
+    verified locally but never actually run on Testing Farm.
+
+    Running it did give the answer, just not from the monitor itself:
+    the same boot's console showed selinux-autorelabel.service deciding
+    *another* full relabel was needed and starting `fixfiles -T 0
+    restore` at ~t=6.5s, on every single power-cycled boot, despite
+    /.autorelabel being confirmed absent right before each one --
+    competing for I/O on the very same nvme0n1p3 device everything else
+    was timing out on, and re-mangling files' SELinux user back to
+    unconfined_u mid-boot along the way (the same class of bug as the
+    ld.so.cache fix, just recurring). Masking selinux-autorelabel.service
+    outright (prepare_for_mls_force_relabel() already did the equivalent
+    full relabel once, so a second one is pure redundant I/O) was the
+    actual fix: the next run reached multi-user.target, started sshd,
+    and reached network-online.target in well under two minutes, with
+    dev-nvme0n1p3.device no longer timing out at all. The original
+    boot-hang bug this whole investigation was chasing is fixed.
+
+    That surfaced the next layer instead: tmt's own SSH reconnect still
+    never succeeded, not because the guest didn't come up (it verifiably
+    did, repeatedly, well within each power-cycle window) but because
+    every single attempt failed at the bare TCP level --
+    `ssh: connect to host <ip> port 22: Connection timed out` -- before
+    any SSH protocol exchange even starts. The same fixed IP accepted
+    SSH just fine for every earlier *permissive* reboot in the same run,
+    so this is specific to the enforcing boot, not a general Testing
+    Farm networking problem, and dontaudit-off ausearch shows nothing
+    network-related, so it doesn't look like an SELinux denial either.
+    Leading theories: a missing/late default route (would let inbound
+    SYNs arrive and get SYN-ACKed but strand the reply, looking exactly
+    like a client-side connect timeout), a firewall ruleset that's
+    default-deny for a window or permanently on this boot, or sshd not
+    actually bound where it claims. Added mls-net-diag.service (route/
+    address/firewall state plus a loopback self-connect to sshd, polled
+    every 15s for 5 minutes, forced to the console) to tell these apart
+    without needing the very SSH access that's missing; the now-answered
+    udev diagnostics are retired (kept in mls-cloudinit-fix/ for
+    reference, no longer enabled) to free up console bandwidth for it.
+
 prepare:
   - name: Install and configure MLS policy in Permissive mode
     how: shell
@@ -624,46 +676,28 @@ prepare:
           # this kind of raw-device read. That means the block (if it's
           # SELinux-related at all) is happening somewhere `ausearch`
           # can't see, or it isn't an SELinux permission problem at all
-          # but a genuine udev/blkid hang specific to MLS labels. Staged
-          # a live diagnostic (mls-udev-diag.service, DefaultDependencies=no
-          # so it doesn't wait on the very mounts it's investigating) that
-          # runs `udevadm test-builtin blkid` and `udevadm test` directly
-          # against the root partition's sysfs device early in this boot,
-          # each bounded by `timeout 60`, with output forced to the
-          # console (the debug journald-forward-to-console config from
-          # the earlier probe step is still active) -- this should show
-          # directly whether the blkid builtin call succeeds, errors, or
-          # hangs, without needing SSH at all.
-          mkdir -p /etc/systemd/system
-          cp $TMT_TREE/tmt/mls-cloudinit-fix/mls-udev-diag.service \
-              /etc/systemd/system/mls-udev-diag.service
-          systemctl daemon-reload
-          systemctl enable mls-udev-diag.service
-
-          # Follow-up after 6030357b: pointing the non-root mounts at the
-          # raw /dev/nvme0n1p3 device (instead of its by-uuid symlink)
-          # didn't help -- the timeout target just became
-          # dev-nvme0n1p3.device itself, so this was never about by-uuid
-          # symlink creation specifically. It's the systemd *device unit*
-          # for that partition never becoming "ready" a second time in the
-          # main OS's freshly-started udevd, even though the very same
-          # partition is already mounted as root (via the initrd's udevd,
-          # which doesn't carry state across switch-root). Add a live
-          # monitor (mls-udev-monitor.service) that runs `udevadm monitor
-          # --kernel --udev` for the whole boot -- this shows directly
-          # whether the kernel ever re-emits a uevent for nvme0n1p3 in the
-          # main OS, and separately whether udev ever finishes processing
-          # it -- plus, once we're past the point where it's already known
-          # to be stuck (t+45s), an active `udevadm trigger`/`udevadm
-          # settle` probe and a dump of the udev device DB (/run/udev/data)
-          # and its labels, per the theory that this is a udev-worker/
-          # device-DB-communication issue under MLS rather than a classic
-          # missing-TE-rule gap (already ruled out via mls_file_read_all_levels
-          # + the policy/mls constraint review, see below).
-          cp $TMT_TREE/tmt/mls-cloudinit-fix/mls-udev-monitor.service \
-              /etc/systemd/system/mls-udev-monitor.service
-          systemctl daemon-reload
-          systemctl enable mls-udev-monitor.service
+          # but a genuine udev/blkid hang specific to MLS labels.
+          #
+          # RESOLVED (this round): the live monitor (mls-udev-monitor.service,
+          # kept in mls-cloudinit-fix/ for reference but no longer enabled
+          # below -- see the masking fix a few lines down for why) never
+          # actually got to show anything conclusive about a *second*
+          # uevent, because the real bug was one step earlier: this same
+          # boot's console showed selinux-autorelabel.service deciding yet
+          # another full relabel was needed and running `fixfiles -T 0
+          # restore` at ~t=6.5s, competing for I/O on the very same
+          # nvme0n1p3 device the "stuck" dev-nvme0n1p3.device unit lives
+          # on, for the whole ~64s window everything else was timing out
+          # in. Masking that service outright (below) turned out to be
+          # the actual fix: the very next run reached multi-user.target,
+          # started sshd, and reached network-online.target in under two
+          # minutes, with dev-nvme0n1p3.device no longer timing out at
+          # all. mls-udev-diag.service/mls-udev-monitor.service did their
+          # job (localizing the problem to *something* competing with
+          # nvme0n1p3, which is what pointed at the relabel-restart
+          # theory in the first place) and are retired now to cut console
+          # noise for the next investigation below -- not deleted, in
+          # case a future regression needs them again.
 
           sed -i 's/^SELINUX=.*/SELINUX=enforcing/' /etc/selinux/config
 
@@ -728,6 +762,52 @@ prepare:
           ls -la /etc/systemd/system/systemd-udevd.service.d/99-debug.conf \
                  /etc/systemd/journald.conf.d/99-diag-console.conf 2>&1 || true
           systemctl daemon-reload
+
+          # RESOLVED as of the masking fix above: the very next run after
+          # it reached multi-user.target, started sshd.service, and reached
+          # network-online.target all within ~111s (Startup finished in
+          # 811ms (kernel) + 2.272s (initrd) + 1min 48.529s (userspace) --
+          # console-verified, not guessed) -- dev-nvme0n1p3.device no
+          # longer times out at all. That's the boot hang this whole
+          # investigation was chasing, fixed for real.
+          #
+          # But acceptance criterion 1 ("boots reliably to a working SSH
+          # session") still isn't met: tmt's own reconnect never once
+          # succeeded across four ~5-minute power-cycles of the guest
+          # (still the same pre-existing, external, tmt/Artemis-independent
+          # cadence noted above -- unrelated to this fix), and tmt-run.log
+          # shows exactly why -- not an SSH handshake/auth failure, but a
+          # bare TCP-level failure on *every* attempt:
+          #   ssh: connect to host <ip> port 22: Connection timed out
+          # That message comes from the client's own connect() call, before
+          # any SSH protocol exchange even starts, and it's the same result
+          # whether the attempt happens to fall inside the guest's
+          # confirmed-live window or not. Since the same fixed IP accepted
+          # SSH connections without issue for every earlier *permissive*
+          # reboot in this exact run (see the rsync/tmt-topology-copy
+          # activity right before this step), something specific to this
+          # enforcing boot -- not a general Testing Farm/network problem --
+          # is making the guest's SSH port externally unreachable even
+          # though sshd starts successfully *inside* it. ausearch/dontaudit
+          # off shows nothing network-related, so this doesn't look like an
+          # SELinux denial either. Leading theories, in rough order of
+          # suspicion: (a) a missing/late default route -- inbound SYNs
+          # could still arrive and get a SYN-ACK queued, but with no route
+          # back out that SYN-ACK never reaches the client, which looks
+          # exactly like a client-side connect timeout; (b) a firewall
+          # (nftables/firewalld) ruleset that ends up default-deny for a
+          # window, or permanently, on this boot specifically; (c) sshd
+          # somehow not actually bound where expected despite logging
+          # "Started". A loopback self-connect from *inside* the guest
+          # would distinguish (c) from (a)/(b) instantly, and doesn't need
+          # external reachability at all. Added mls-net-diag.service to
+          # test all three at once, forced to the console every 15s for
+          # 5 minutes (spans a full power-cycle) since SSH is exactly
+          # what's unavailable to check this any other way.
+          cp $TMT_TREE/tmt/mls-cloudinit-fix/mls-net-diag.service \
+              /etc/systemd/system/mls-net-diag.service
+          systemctl daemon-reload
+          systemctl enable mls-net-diag.service
 
           # Force a full, fresh local -> init -> config -> final cloud-init
           # run under enforcing on the next boot (see the "Reset cloud-init's

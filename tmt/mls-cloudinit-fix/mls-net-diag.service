@@ -1,0 +1,59 @@
+[Unit]
+Description=Diagnostic: network/firewall/sshd reachability state (external SSH TCP-connect-timeout investigation)
+DefaultDependencies=no
+After=network.target sshd.service
+Wants=network.target
+
+[Service]
+Type=simple
+StandardOutput=journal+console
+StandardError=journal+console
+# Masking selinux-autorelabel.service (see mls.fmf) fixed the udev/disk
+# hang this whole investigation started from: multi-user.target, sshd,
+# and network-online.target are now all reached in under two minutes.
+# But tmt's SSH reconnect to the guest's public IP still times out at
+# the raw TCP-connect level (not an auth/handshake failure) every single
+# cycle, even during the guest's confirmed-live window -- so the
+# remaining gap is external reachability, not SELinux or udev. This
+# polls, every 15s for several minutes, everything needed to tell
+# "sshd isn't listening" from "sshd is listening but packets can't get
+# back out" from "sshd is listening and reachable, tmt just missed the
+# window": interface/address state, routing (a missing/late default
+# route would let inbound SYNs arrive but strand the SYN-ACK reply,
+# which looks exactly like a client-side connect timeout), firewall
+# state (nft/firewalld, in case a deny-by-default ruleset loads before
+# its allow-ssh rule), the actual listening-socket table, and a
+# loopback self-connect to confirm sshd itself accepts connections
+# regardless of what happens to external routing.
+ExecStart=/bin/sh -c '\
+    i=0; \
+    while [ "$i" -lt 20 ]; do \
+        echo "=== mls-net-diag: iteration $i (t~$(( i * 15 ))s after unit start) ==="; \
+        echo "--- ip -4 -o addr show ---"; \
+        ip -4 -o addr show 2>&1; \
+        echo "--- ip route show ---"; \
+        ip route show 2>&1; \
+        echo "--- ip -6 route show default (in case only a v6 default exists) ---"; \
+        ip -6 route show default 2>&1; \
+        echo "--- ss -H -tln (listening TCP sockets) ---"; \
+        ss -H -tln 2>&1; \
+        echo "--- is sshd actually accepting on loopback? ---"; \
+        timeout 3 sh -c "exec 3<>/dev/tcp/127.0.0.1/22 && echo loopback:22 CONNECT-OK && exec 3<&-" 2>&1; \
+        echo "loopback probe exit=$?"; \
+        echo "--- firewalld ---"; \
+        systemctl is-active firewalld 2>&1; \
+        command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state 2>&1 && firewall-cmd --list-all 2>&1; \
+        echo "--- nft ruleset (default Fedora backend) ---"; \
+        command -v nft >/dev/null 2>&1 && nft list ruleset 2>&1 | head -80; \
+        echo "--- iptables (legacy/compat fallback) ---"; \
+        command -v iptables >/dev/null 2>&1 && iptables -L -n -v 2>&1 | head -40; \
+        echo "--- sshd process ---"; \
+        ps -eZ 2>&1 | grep -i sshd; \
+        echo "=== mls-net-diag: iteration $i done ==="; \
+        i=$((i + 1)); \
+        sleep 15; \
+    done; \
+    echo "=== mls-net-diag: finished all iterations ==="'
+
+[Install]
+WantedBy=multi-user.target
