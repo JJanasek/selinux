@@ -99,9 +99,41 @@ prepare_for_mls_configure() {
     # store that matters. Fixed by reordering: set SELINUXTYPE=mls first, so
     # the login mapping below lands in the correct (mls) store, and root
     # actually gets sysadm_u/sysadm_r/sysadm_t once the switch takes effect.
+    #
+    # IMPORTANT (regression from the reordering above, root-caused via a
+    # diagnostic-wrapped run after the reorder made this step start dying
+    # deterministically in ~8s with the whole SSH session breaking outright
+    # -- "/bin/bash: Permission denied" followed by rsync's connection
+    # closing with 0 bytes received, i.e. the remote shell itself couldn't
+    # even exec, not a plain file-permission error): `semanage login`, like
+    # every other semanage subcommand, defaults to an immediate rebuild AND
+    # RELOAD of whichever store SELINUXTYPE currently names into the *live*
+    # kernel unless told not to. At this exact point SELINUXTYPE now says
+    # "mls" (just set above) but SELINUX= is still whatever this base image
+    # booted with (Fedora's default: enforcing, under the *targeted*
+    # policy) -- prepare_for_mls_configure() doesn't flip SELINUX to
+    # permissive itself; that happens one line later in the caller. So the
+    # unguarded `semanage login -m` here force-loads a brand-new, freshly
+    # built *mls* policy live into a kernel that is both (a) still running
+    # the old targeted policy's semantics for every already-running process,
+    # including this very SSH session, and (b) still enforcing for real.
+    # The instant that load lands, this shell's targeted-policy context
+    # (something like unconfined_u, which isn't even a valid identity under
+    # mls) has no valid mapping in the new policy at all, and every
+    # subsequent syscall -- including the next command's exec(/bin/bash)
+    # -- gets denied for real, not just logged. This is the exact same
+    # live-reload-vs-running-session hazard already fixed for `semodule -n
+    # -i cloudform.pp`, `semanage permissive -n -a`, and `semanage dontaudit
+    # -N off` elsewhere in this plan; it was simply missed here because the
+    # reorder that exposed it was itself the very fix for the staff_t bug
+    # above. `-N`/`--noreload` defers the change to disk without touching
+    # the live kernel, exactly like those other call sites -- harmless
+    # here since the whole point of this function is to reboot into the
+    # freshly built mls store shortly after anyway (prepare_for_mls_reboot,
+    # called by every caller right after this).
     sed -i 's/^SELINUXTYPE=.*/SELINUXTYPE=mls/' /etc/selinux/config
 
-    semanage login -m -s sysadm_u root
+    semanage login -N -m -s sysadm_u root
 
     touch /.autorelabel
 }
