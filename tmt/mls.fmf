@@ -684,13 +684,30 @@ prepare:
           ls -la /.autorelabel 2>&1 || echo "/.autorelabel absent, as expected"
           echo "=== did the original relabel service actually finish successfully? ==="
           systemctl status selinux-autorelabel.service --no-pager -l 2>&1 || true
-          # Whatever the cause, defensively clear it: the system has been
-          # functioning correctly under permissive this whole time
-          # (cloud-init, policy queries, the earlier probe all worked),
-          # so a further full relabel buys nothing and only adds
-          # unpredictable I/O load right when the enforcing boot can
-          # least afford it.
+          # Confirmed (with dontaudit off this time) that clearing the
+          # flag here wasn't enough: /.autorelabel is absent right here,
+          # every time this step runs, and yet the *next* boot's console
+          # still logs "SELinux mls policy relabel is required" and runs
+          # a full `fixfiles -T 0 restore` at ~t=6.5s on every single one
+          # of several power-cycled boots afterwards, each time re-mangling
+          # some files' SELinux user back to unconfined_u mid-boot (the
+          # same class of bug as the ld.so.cache fix above, just spreading
+          # to other files -- gconv-modules.cache showed up this round)
+          # and competing for I/O on the same nvme0n1p3 device that's
+          # already timing out. So something other than the flag file
+          # itself (most likely dracut's own early-boot SELINUXTYPE
+          # mismatch check, re-run fresh from a cold kernel on every
+          # boot) is what actually decides a relabel is needed -- clearing
+          # /.autorelabel doesn't touch that decision at all. Stop trying
+          # to out-race whatever recreates the need and just mask the
+          # service outright: prepare_for_mls_force_relabel() already
+          # did the equivalent full relabel once already (restorecon -RF /,
+          # in the "Reboot to apply MLS and Relabel" step above), so
+          # selinux-autorelabel.service running again here is pure
+          # redundant I/O, not a correctness requirement.
           rm -f /.autorelabel
+          systemctl mask selinux-autorelabel.service
+          systemctl status selinux-autorelabel.service --no-pager -l 2>&1 || true
 
           # Previously (7d7eabf4) this dialed dontaudit/debug logging back
           # off here, since two earlier rounds found nothing and the extra
