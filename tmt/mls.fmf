@@ -891,8 +891,33 @@ prepare:
           # permissive, that's strong evidence MLS-specific SID/context
           # computation overhead for these two heavily-invoked domains is the
           # real mechanism, not a discrete missing rule.
-          semanage permissive -a udev_t
-          semanage permissive -a NetworkManager_t
+          #
+          # First attempt (b98aa32f) used a live `semanage permissive -a`
+          # for both, same as the initrc_t precedent above. That precedent
+          # is safe for initrc_t (an ad hoc oneshot diagnostic domain with
+          # no long-running daemon), but NetworkManager_t is the domain of
+          # the *actively running* NetworkManager process that owns the
+          # network connection this very SSH session (and the upcoming
+          # tmt-reboot handshake) depends on. `semanage permissive -a`
+          # without `-n` does an immediate rebuild-and-reload of the whole
+          # mls store into the live kernel, and Testing Farm runs
+          # 2fc81438/548f9fc8/0a61c365 all confirm the fallout: every one
+          # died with "Failed to push workdir to the guest" / "Plugin
+          # raised an unhandled exception" *immediately* after this step's
+          # tmt-reboot call -- too fast to be a real boot timeout, and the
+          # same failure the semodule-install comment below already warned
+          # about for exactly this reason ("the guest broke immediately
+          # ... because the live kernel was suddenly enforcing MLS
+          # semantics no running context actually satisfied"). Marking
+          # NetworkManager_t's own domain permissive live, on a session
+          # NetworkManager itself is carrying, is the same class of
+          # self-inflicted disruption. `-n` defers the store update to disk
+          # without an immediate reload -- harmless here since a
+          # `tmt-reboot` is the very next line anyway, so the kernel picks
+          # up the change fresh on that reboot instead of hot-reloading
+          # into the live, still-in-use session.
+          semanage permissive -n -a udev_t
+          semanage permissive -n -a NetworkManager_t
 
           # Force a full, fresh local -> init -> config -> final cloud-init
           # run under enforcing on the next boot (see the "Reset cloud-init's
