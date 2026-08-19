@@ -1243,6 +1243,10 @@ prepare:
     how: shell
     script: |
       if [ "${TEST_ENFORCING:-1}" = "1" ]; then
+          echo "=== SELinux status right after the enforcing-switch reboot ==="
+          getenforce 2>&1 || true
+          sestatus 2>&1 || true
+
           echo "=== did sshd/networking come up normally this boot? ==="
           systemctl status sshd.service --no-pager 2>&1 || true
           ip addr show 2>&1 || true
