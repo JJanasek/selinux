@@ -497,6 +497,55 @@ prepare:
 
           echo "=== udev trigger/settle activity this boot ==="
           journalctl -b -u 'systemd-udev*' --no-pager -o short-monotonic 2>&1 || true
+
+          # New: every run since eb2ade08 (deferred -n permissive changes)
+          # still dies immediately after *this* step hands back to tmt,
+          # when tmt tries to rsync-push the next step's script over this
+          # same just-established SSH session -- "bash: /root/.bashrc:
+          # Permission denied" plus rsync mkstemp EACCES under
+          # /var/ARTIFACTS/.../tmt/mls/tree/. That's the exact symptom this
+          # file already documented once before for a *different* cause
+          # (a live semodule/permissive reload disrupting a running
+          # session's context mid-flight) -- but no such reload happens
+          # between here and the next step, so it must be something about
+          # *this* session itself: this is the first SSH login to land as
+          # sysadm_u/sysadm_r/sysadm_t under the now-active MLS kernel
+          # policy (the semanage login mapping was staged pre-reboot but
+          # could never actually take effect until the mls policy itself
+          # became the live kernel policy, which only happened starting
+          # with the "Reboot to apply MLS and Relabel" step). Capture
+          # everything needed to explain a *DAC* (not AVC-visible, since
+          # we're still permissive) Permission denied on this exact
+          # session before it gets reused for the next push: our own
+          # resulting context/range, on-disk labels for the paths that
+          # fail, and whether pam_namespace (stock Fedora/MLS's per-level
+          # polyinstantiation of /tmp, and sometimes $HOME) is configured
+          # and could be bind-mounting something unexpected over /root or
+          # interfering with /var/ARTIFACTS.
+          echo "=== our own resulting SELinux context/range for this SSH session ==="
+          id -Z 2>&1 || true
+
+          echo "=== /root and /root/.bashrc: DAC mode/owner + SELinux label ==="
+          ls -laZd /root 2>&1 || true
+          ls -laZ /root/.bashrc 2>&1 || true
+          stat /root/.bashrc 2>&1 || true
+
+          echo "=== /var/ARTIFACTS and the live work directory: DAC mode/owner + SELinux label ==="
+          ls -laZd /var/ARTIFACTS 2>&1 || true
+          ls -laZd /var/ARTIFACTS/work-* 2>&1 || true
+          find /var/ARTIFACTS -maxdepth 3 -exec ls -ldZ {} \; 2>&1 || true
+
+          echo "=== is pam_namespace configured (stock MLS per-level /tmp or \$HOME polyinstantiation)? ==="
+          grep -H pam_namespace /etc/pam.d/* 2>&1 || echo "pam_namespace not referenced in /etc/pam.d/*"
+          cat /etc/security/namespace.conf 2>&1 || true
+          mount 2>&1 | grep -iE 'root|artifacts|tmp-inst|polyinstant' || echo "no polyinstantiation-looking mounts found"
+
+          echo "=== full mount table, for anything odd (bind mounts, wrong fs, ro remounts) ==="
+          mount 2>&1 || true
+
+          echo "=== sanity: can root actually write *anywhere* right now, or is this global? ==="
+          touch /root/.mls-diag-write-test 2>&1 && echo "write to /root OK" && rm -f /root/.mls-diag-write-test
+          touch /var/ARTIFACTS/.mls-diag-write-test 2>&1 && echo "write to /var/ARTIFACTS OK" && rm -f /var/ARTIFACTS/.mls-diag-write-test
       fi
 
   - name: Switch to Enforcing and reboot again (tests acceptance criterion 1 for real)
