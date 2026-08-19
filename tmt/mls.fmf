@@ -132,15 +132,15 @@ prepare:
                   sed -i "s#UUID=$uuid#$dev#g" /etc/fstab
           done
           cp /etc/fstab /etc/fstab.rewritten
-          awk '!/^#/ && NF >= 4 && $3 != "swap" { $4 = $4",nofail,x-systemd.device-timeout=90" } { print }' \
+          awk '!/^#/ && NF >= 4 && $3 != "swap" { $4 = $4",nofail,x-systemd.device-timeout=240" } { print }' \
               /etc/fstab.rewritten > /etc/fstab
 
-          # udev_t/NetworkManager_t's own MLS range/category computation
-          # overhead is the leading theory for that device-processing
-          # slowness; -n defers the reload to the imminent reboot instead
-          # of hot-loading into NetworkManager's own live session.
-          semanage permissive -n -a udev_t
-          semanage permissive -n -a NetworkManager_t
+          # DIAGNOSTIC (temporary): keep udev_t/NetworkManager_t fully
+          # enforcing and disable dontaudit instead of marking them
+          # permissive, to check whether a real, dontaudit-suppressed
+          # denial -- not just raw MLS AVC-computation overhead -- is
+          # behind the device-readiness delay. -N defers the reload.
+          semanage dontaudit off -N
 
           # Raise the audit backlog so early-boot AVCs survive to be read
           # by the verification step below instead of being dropped once
