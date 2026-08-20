@@ -135,12 +135,16 @@ prepare:
           awk '!/^#/ && NF >= 4 && $3 != "swap" { $4 = $4",nofail,x-systemd.device-timeout=90" } { print }' \
               /etc/fstab.rewritten > /etc/fstab
 
-          # DIAGNOSTIC (temporary): keep both the previously-working
-          # permissive marks *and* dontaudit off, so if permissive is
-          # bypassing a real would-be-denied check, it now has to show up
-          # in the audit log as permissive=1 instead of being swallowed.
-          semanage permissive -n -a udev_t
-          semanage permissive -n -a NetworkManager_t
+          # EXPERIMENT (temporary): the previous permissive+dontaudit-off
+          # run (artifacts 516a17dc-46d9-492c-bee9-697b8806f305) passed
+          # clean with zero udev_t/NetworkManager_t AVCs anywhere in the
+          # full dump, even with dontaudit off and audit_backlog_limit
+          # raised. Permissive mode only has an observable effect when it
+          # suppresses a denial that would otherwise occur; with zero
+          # denials logged for either domain, marking them permissive
+          # here should be a no-op. Testing that now by dropping both
+          # marks and keeping dontaudit off, so any real denial they were
+          # masking would still surface in the audit log below.
           semanage dontaudit off -N
 
           # Raise the audit backlog so early-boot AVCs survive to be read
