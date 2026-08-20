@@ -357,6 +357,50 @@ prepare:
       echo "=== AVC/USER_AVC denials this boot (ausearch) ==="
       ausearch -m AVC,USER_AVC -ts boot 2>&1 || echo "no AVCs this boot"
 
+      # DIAGNOSTIC (round 5): re-examining the "no missing allow rule"
+      # conclusion above from a different angle -- a zero-denial finding
+      # only shows nothing was *blocked*; it says nothing about whether
+      # the mlsconstrain dominance math is being computed (and costing
+      # cycles) on every *allowed* access too. Gathering direct ground
+      # truth against the live loaded policy rather than trusting any
+      # prior round's notes, to check three concrete candidate causes:
+      # (1) udev_t/NetworkManager_t's actual constraint-exemption
+      # attributes, (2) their actual runtime MLS range, (3) whether the
+      # devices they process ever carry categories, before deciding
+      # whether any of this is worth building a policy change around.
+      echo "=== udev_t / NetworkManager_t actual running range (ps -eZ) ==="
+      ps -eZ | grep -E 'udev_t|NetworkManager_t' || echo "no matching running processes"
+
+      echo "=== udev_t attributes in the ACTIVE loaded kernel policy ==="
+      seinfo -x -t udev_t /sys/fs/selinux/policy 2>&1
+
+      echo "=== NetworkManager_t attributes in the ACTIVE loaded kernel policy ==="
+      seinfo -x -t NetworkManager_t /sys/fs/selinux/policy 2>&1
+
+      echo "=== mlsconstrain rules for chr_file (udev's actual device-node class) ==="
+      seinfo --constrain chr_file /sys/fs/selinux/policy 2>&1
+
+      echo "=== mlsconstrain rules for blk_file ==="
+      seinfo --constrain blk_file /sys/fs/selinux/policy 2>&1
+
+      echo "=== mlsconstrain rules for dir (udev also walks /dev, /sys, /run) ==="
+      seinfo --constrain dir /sys/fs/selinux/policy 2>&1
+
+      echo "=== mlsconstrain rules for the socket classes NetworkManager_t uses ==="
+      seinfo --constrain socket /sys/fs/selinux/policy 2>&1
+      seinfo --constrain netlink_route_socket /sys/fs/selinux/policy 2>&1
+
+      echo "=== labels on this guest's actual root-disk devices (ever categorized, or always s0?) ==="
+      ls -Z /dev/nvme0n1p2 /dev/nvme0n1p3 2>&1
+      ls -Z /dev/disk/by-uuid/ 2>&1
+
+      echo "=== devtmpfs mount options (dynamic per-node labeling vs static context=) ==="
+      mount | grep devtmpfs
+
+      echo "=== AVC cache size/pressure right now ==="
+      echo "cache_threshold: $(cat /sys/fs/selinux/avc/cache_threshold 2>&1)"
+      cat /sys/fs/selinux/avc/cache_stats 2>&1
+
 execute:
   how: tmt
   script: |
