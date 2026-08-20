@@ -135,16 +135,25 @@ prepare:
           awk '!/^#/ && NF >= 4 && $3 != "swap" { $4 = $4",nofail,x-systemd.device-timeout=90" } { print }' \
               /etc/fstab.rewritten > /etc/fstab
 
-          # EXPERIMENT (temporary): the previous permissive+dontaudit-off
-          # run (artifacts 516a17dc-46d9-492c-bee9-697b8806f305) passed
-          # clean with zero udev_t/NetworkManager_t AVCs anywhere in the
-          # full dump, even with dontaudit off and audit_backlog_limit
-          # raised. Permissive mode only has an observable effect when it
-          # suppresses a denial that would otherwise occur; with zero
-          # denials logged for either domain, marking them permissive
-          # here should be a no-op. Testing that now by dropping both
-          # marks and keeping dontaudit off, so any real denial they were
-          # masking would still surface in the audit log below.
+          # NOT masking a known policy denial: a passing run with these
+          # marks on and dontaudit off (artifacts
+          # 516a17dc-46d9-492c-bee9-697b8806f305) showed zero
+          # udev_t/NetworkManager_t AVCs anywhere in the full dump, so
+          # there is no known would-be-denied access being suppressed
+          # here. But dropping both marks (commit a5b3af25, artifacts
+          # 62e3cb72/3cd4d2fc/3c84f426) reproduced a hard failure 3/3
+          # times, always the same signature: dev-*.device (the root
+          # disk's raw partition unit) times out waiting for udev even
+          # with the 90s nofail grace period below, before the plan ever
+          # reaches the audit-verification step that would have caught a
+          # real denial -- so this isn't a case where permissive is
+          # silently swallowing a logged AVC; it never gets far enough
+          # to log one either way. Keeping both marks as a broad,
+          # empirically load-bearing safety margin against this
+          # early-boot udev/disk-readiness race, not as a workaround for
+          # any identified SELinux denial.
+          semanage permissive -n -a udev_t
+          semanage permissive -n -a NetworkManager_t
           semanage dontaudit off -N
 
           # Raise the audit backlog so early-boot AVCs survive to be read
