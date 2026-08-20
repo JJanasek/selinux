@@ -5,7 +5,7 @@ description: |
     real enforcing mode (acceptance criterion 1), with cloud-init and
     networking both working normally under mls's stricter constraints.
 
-    Four local policy modules fix gaps in the stock mls policy that this
+    Three local policy modules fix gaps in the stock mls policy that this
     plan depends on and that Fedora's shipped mls build doesn't cover yet:
 
     - cloudform (mls-cloudinit-fix/): grants cloud-init the file, socket,
@@ -31,15 +31,15 @@ description: |
       switch step below), unrelated to acceptance criterion 1's actual
       boot-reliability issue -- fixed on its own merits since dontaudit
       off surfaces it.
-    - udevrange (mls-udev-range-fix/): EXPERIMENT, see the enforcing-
-      switch step below for the full rationale and evidence -- pins
-      udev_t to a single MLS level (s0) via range_transition, instead
-      of the full clearance range it inherits by default under mls
-      (upstream udev.te's own range-restriction call is enable_mcs-only
-      and, per that step's analysis, wouldn't actually restrict
-      anything even if ported verbatim to mls).
 
-    All four are checked into this plan as standalone third-party module
+    (A fourth module, mls-udev-range-fix/udevrange.te, pinning udev_t to
+    a single MLS level via range_transition, was built and tested as
+    part of this investigation's round 5b -- see the enforcing-switch
+    step below for the full rationale and result -- but did not fix the
+    boot-reliability issue, so it was removed again rather than kept
+    live for no benefit.)
+
+    All three are checked into this plan as standalone third-party module
     sources, built with the standard `/usr/share/selinux/devel/Makefile`
     workflow and loaded into the guest's mls store with `semodule -i`, so
     there's no runtime dependency on GitHub or a custom selinux-policy
@@ -101,17 +101,16 @@ prepare:
       cp $TMT_TREE/tmt/mls-cloudinit-fix/cloudform.fc .
       cp $TMT_TREE/tmt/mls-ssh-pipes-fix/mlssshpipes.te .
       cp $TMT_TREE/tmt/mls-udev-ptrace-fix/udevptrace.te .
-      cp $TMT_TREE/tmt/mls-udev-range-fix/udevrange.te .
 
-      make -f /usr/share/selinux/devel/Makefile cloudform.pp mlssshpipes.pp udevptrace.pp udevrange.pp
+      make -f /usr/share/selinux/devel/Makefile cloudform.pp mlssshpipes.pp udevptrace.pp
 
       # -n: build these into the (currently inactive) mls store without
       # hot-reloading the live kernel, which is still running -- and
       # still enforcing -- the old targeted policy at this point. The
       # mls store only becomes the active kernel policy on the reboot in
       # the next step.
-      semodule -n -i cloudform.pp mlssshpipes.pp udevptrace.pp udevrange.pp
-      semodule -l | grep -E '^(cloudform|mlssshpipes|udevptrace|udevrange)\b'
+      semodule -n -i cloudform.pp mlssshpipes.pp udevptrace.pp
+      semodule -l | grep -E '^(cloudform|mlssshpipes|udevptrace)\b'
 
       # DIAGNOSTIC (methodological check on the dontaudit investigation
       # below): `-n` still rebuilds the mls store's on-disk compiled
@@ -386,24 +385,72 @@ prepare:
           # the complete, unrestricted range top-to-bottom. Porting it
           # verbatim would be a no-op, consistent with (and further
           # reinforcing) round 5's kernel-source finding that dominance-
-          # math cost doesn't depend on range width. So mls-udev-range-
-          # fix/udevrange.te (loaded alongside the other three local
-          # modules above) instead pins udev_t to a genuinely narrower,
-          # single low level -- plain "s0", no dash, no categories --
-          # which upstream does not do for udev_t under either mcs or
-          # mls. Checked this against every mlsconstrain/mlsvalidatetrans
-          # expression in policy/mls before testing (full reasoning in
-          # udevrange.te's header comment): udev_t's existing
-          # mlsfileread/mlsfilewrite/mlsfileupgrade/mlsfiledowngrade/
-          # mlsprocwrite attributes make every file op and every process
-          # *write* op an unconditional pass independent of its own
-          # range, and the one class without a blanket attribute
-          # (process reads: getsched/getpgid/getattr/ptrace-read/share)
-          # already gated solely on `l1 dom l2`, where l1 is udev_t's
-          # range's low end -- s0 whether pinned or left at the full
-          # range, so identical either way. Expected to be safe; testing
-          # empirically below to confirm, with both permissive marks
-          # still off.
+          # math cost doesn't depend on range width. So a temporary
+          # mls-udev-range-fix/udevrange.te module instead pinned udev_t
+          # to a genuinely narrower, single low level -- plain "s0", no
+          # dash, no categories -- which upstream does not do for udev_t
+          # under either mcs or mls. Checked this against every
+          # mlsconstrain/mlsvalidatetrans expression in policy/mls before
+          # testing: udev_t's existing mlsfileread/mlsfilewrite/
+          # mlsfileupgrade/mlsfiledowngrade/mlsprocwrite attributes make
+          # every file op and every process *write* op an unconditional
+          # pass independent of its own range, and the one class without
+          # a blanket attribute (process reads: getsched/getpgid/
+          # getattr/ptrace-read/share) already gated solely on
+          # `l1 dom l2`, where l1 is udev_t's range's low end -- s0
+          # whether pinned or left at the full range, so identical
+          # either way.
+          #
+          # Round 5b RESULT: built and loaded udevrange.te (range_transition
+          # kernel_t/init_t udev_exec_t:process s0;), both permissive
+          # marks off, 3 independent Testing Farm runs
+          # (136cfa6c-f301-4abe-835f-ef662cd276c8,
+          # 76fdb4ed-c1d3-4c0c-b620-55c1c55426dc,
+          # ac19dd15-88cc-489b-890f-cfe048739225). Result: 0/3, and
+          # each run's console log confirms both halves of the
+          # pre-test safety analysis and the failure mode itself
+          # directly: (a) no new udev_t/NetworkManager_t AVCs anywhere
+          # in any of the three logs -- the only denials present are
+          # the same pre-existing systemd_*_generator_t/kernel_t-
+          # kmod_t/systemd_oomd_t/systemd_tmpfiles_t noise this
+          # investigation has already characterized as harmless and
+          # unrelated in every prior round, confirming the range pin
+          # itself introduced no regression, exactly as the safety
+          # analysis predicted; but (b) all three runs still hit the
+          # identical dev-nvme0n1p2.device/dev-nvme0n1p3.device timeout
+          # -> var.mount dependency failure -> repeated retry signature
+          # as every other marks-dropped attempt this investigation has
+          # run (one run's log even shows var.mount briefly mounting
+          # successfully once before being unmounted and re-timing-out,
+          # underscoring this is a retry loop, not a one-shot failure),
+          # ending in the same reboot-reconnect timeout with no SSH
+          # ever regained. A genuinely narrower target range does not
+          # fix the boot -- consistent with the kernel-source finding
+          # above that per-op dominance-check cost doesn't scale with
+          # range width, this rules out approach 2 empirically as well.
+          # udevrange.te removed again (module and directory both
+          # deleted) since it provides no benefit and isn't worth
+          # carrying as a permanent deviation from upstream udev.te.
+          #
+          # Overall round-5 conclusion: both concrete, policy-grounded
+          # theories from this round of investigation -- AVC cache
+          # pressure, and per-syscall MLS dominance-math cost being
+          # proportional to udev_t's category-range width -- were
+          # tested empirically (not just reasoned about) and both
+          # failed to fix the boot, on top of approach 1 (constraint
+          # short-circuiting) already being ruled out on kernel-source
+          # grounds before ever needing a policy change. Combined with
+          # rounds 1-4's exhaustive denial-based checking, this
+          # investigation has now tested every concrete mechanism
+          # anyone has proposed for *why* mls enforcing mode's per-
+          # syscall overhead specifically breaks udev's root-disk
+          # enumeration on this infra, without finding one that yields
+          # a policy fix. The permissive marks remain the only
+          # mechanism that reliably resolves it; restoring them (and
+          # keeping the fstab UUID-rewrite/nofail/timeout workaround,
+          # which was never in question this round).
+          semanage permissive -n -a udev_t
+          semanage permissive -n -a NetworkManager_t
           semanage dontaudit off -N
 
           # Verification + guard (see round-4 note above for the full
