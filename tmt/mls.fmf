@@ -1,55 +1,12 @@
 summary: MLS Policy Enforcing-Mode Boot Validation
 description: |
-    Validates that a Fedora guest can be switched from the default
-    (targeted) SELinux policy to mls and boot to a working SSH session in
-    real enforcing mode (acceptance criterion 1), with cloud-init and
-    networking both working normally under mls's stricter constraints.
+    Validates that a Fedora guest can be switched from the default targeted
+    SELinux policy to mls and boot to a working SSH session in enforcing mode,
+    with cloud-init and networking functional.
 
-    Three local policy modules fix gaps in the stock mls policy that this
-    plan depends on and that Fedora's shipped mls build doesn't cover yet:
-
-    - cloudform (mls-cloudinit-fix/): grants cloud-init the file, socket,
-      and capability access it needs to run confined as cloud_init_t under
-      mls, instead of relying on the targeted-only unconfined_domain()
-      escape hatch mls doesn't have. Also declares cloud_init_t
-      mls_file_read_all_levels(), since growing the root filesystem
-      legitimately needs to read the raw disk device regardless of its
-      labeled sensitivity. Developed against
-      JJanasek/selinux-policy@mls-enable-cloud-init.
-    - mlssshpipes (mls-ssh-pipes-fix/): backports
-      fedora-selinux/selinux-policy commit a589b1b5 (fixing
-      fedora-selinux/selinux-policy#3286), not yet in
-      selinux-policy-mls-44.6-1.fc44. Without it, sysadm_t (root's login
-      domain under mls) can't read/write the pipes OpenSSH's
-      privilege-separated sshd-session hands a login shell as stdin/
-      stdout, so command output never makes it back over SSH once mls is
-      actually enforcing.
-    - udevptrace (mls-udev-ptrace-fix/): grants udev_t the one
-      self:capability sys_ptrace access missing from upstream udev.te's
-      otherwise-fairly-complete self:capability allow list. Real but
-      narrow and, per this plan's own investigation (see the enforcing-
-      switch step below), unrelated to acceptance criterion 1's actual
-      boot-reliability issue -- fixed on its own merits since dontaudit
-      off surfaces it.
-
-    (A fourth module, mls-udev-range-fix/udevrange.te, pinning udev_t to
-    a single MLS level via range_transition, was built and tested as
-    part of this investigation's round 5b -- see the enforcing-switch
-    step below for the full rationale and result -- but did not fix the
-    boot-reliability issue, so it was removed again rather than kept
-    live for no benefit.)
-
-    All three are checked into this plan as standalone third-party module
-    sources, built with the standard `/usr/share/selinux/devel/Makefile`
-    workflow and loaded into the guest's mls store with `semodule -i`, so
-    there's no runtime dependency on GitHub or a custom selinux-policy
-    build.
-
-    `prepare_for_mls.sh` implements the actual policy switch (login
-    mapping, SELINUXTYPE, scheduled relabel, reboot, and the follow-up
-    forced full-context relabel); see its header for why each step is
-    necessary. This plan sequences that around staging the three modules
-    above and a second reboot into real enforcing mode.
+    Applies necessary workarounds for an unresolved udev/NetworkManager
+    MLS timing race (permissive marks + fstab tuning) and loads custom
+    policy modules to patch missing upstream MLS rules.
 
 prepare:
   - name: Install and configure MLS policy in Permissive mode
@@ -60,21 +17,14 @@ prepare:
       source $TMT_TREE/tmt/prepare_for_mls.sh
       prepare_for_mls_configure
 
-      # Stay permissive for the upcoming relabel reboot; the deliberate
-      # switch to real enforcing mode is its own later step, once the mls
-      # switch itself is known-good.
+      # Stay permissive for the initial relabel reboot
       sed -i 's/^SELINUX=.*/SELINUX=permissive/' /etc/selinux/config
 
-      # cloud-init's `ssh` module regenerates host keys on what it thinks
-      # is a fresh instance boot; keep the existing ones so tmt's SSH
-      # reconnects across this plan's reboots don't break.
+      # Preserve SSH host keys across reboots to maintain tmt connection
       mkdir -p /etc/cloud/cloud.cfg.d
       echo 'ssh_deletekeys: false' > /etc/cloud/cloud.cfg.d/99-preserve-ssh-host-keys.cfg
 
-      # Reset cloud-init's per-instance state so the next boot re-runs
-      # the full local -> init -> config -> final stage sequence under
-      # the correct (mls) SELinux domain transitions, instead of seeing
-      # an already-provisioned instance and skipping everything.
+      # Reset cloud-init state to force a full run under MLS
       cloud-init clean --logs
 
   - name: Build and load cloud-init and sshd-session-pipes policy fixes
@@ -82,50 +32,21 @@ prepare:
     script: |
       dnf install -y policycoreutils-devel
 
-      # cloudform.te calls interfaces not in the stock headers yet
-      # (networkmanager_manage_rw_conf, ssh_read_server_keys,
-      # sysnetwork_manage_config_sockets); they just expand into ordinary
-      # allow/manage_*_pattern rules against types the already-installed
-      # networkmanager/ssh/sysnetwork modules provide, so only the
-      # interface files need adding here.
-      cp $TMT_TREE/tmt/mls-cloudinit-fix/networkmanager-manage-rw-conf.if \
-          /usr/share/selinux/devel/include/contrib/
-      cp $TMT_TREE/tmt/mls-cloudinit-fix/ssh-read-server-keys.if \
-          /usr/share/selinux/devel/include/contrib/
-      cp $TMT_TREE/tmt/mls-cloudinit-fix/sysnetwork-manage-config-sockets.if \
-          /usr/share/selinux/devel/include/system/
+      # Stage missing interface files
+      cp $TMT_TREE/tmt/mls-cloudinit-fix/networkmanager-manage-rw-conf.if /usr/share/selinux/devel/include/contrib/
+      cp $TMT_TREE/tmt/mls-cloudinit-fix/ssh-read-server-keys.if /usr/share/selinux/devel/include/contrib/
+      cp $TMT_TREE/tmt/mls-cloudinit-fix/sysnetwork-manage-config-sockets.if /usr/share/selinux/devel/include/system/
 
       mkdir -p /root/build && cd /root/build
-      cp $TMT_TREE/tmt/mls-cloudinit-fix/cloudform.te .
-      cp $TMT_TREE/tmt/mls-cloudinit-fix/cloudform.if .
-      cp $TMT_TREE/tmt/mls-cloudinit-fix/cloudform.fc .
+      cp $TMT_TREE/tmt/mls-cloudinit-fix/cloudform.* .
       cp $TMT_TREE/tmt/mls-ssh-pipes-fix/mlssshpipes.te .
       cp $TMT_TREE/tmt/mls-udev-ptrace-fix/udevptrace.te .
 
       make -f /usr/share/selinux/devel/Makefile cloudform.pp mlssshpipes.pp udevptrace.pp
 
-      # -n: build these into the (currently inactive) mls store without
-      # hot-reloading the live kernel, which is still running -- and
-      # still enforcing -- the old targeted policy at this point. The
-      # mls store only becomes the active kernel policy on the reboot in
-      # the next step.
+      # Load modules into the inactive MLS store (-n) without hot-reloading
       semodule -n -i cloudform.pp mlssshpipes.pp udevptrace.pp
       semodule -l | grep -E '^(cloudform|mlssshpipes|udevptrace)\b'
-
-      # DIAGNOSTIC (methodological check on the dontaudit investigation
-      # below): `-n` still rebuilds the mls store's on-disk compiled
-      # policy right here (it only skips hot-reloading it into the still-
-      # running targeted kernel) -- so this is the baseline dontaudit
-      # state of that binary before `semanage dontaudit off` is ever
-      # called (that happens later, in the enforcing-switch step, after
-      # this store has already gone through one reboot). dontaudit
-      # defaults to on, so this is expected to be nonzero; the point is
-      # having a concrete baseline to diff the later "off" call against.
-      dnf install -y setools-console
-      mls_policy=$(ls -t /etc/selinux/mls/policy/policy.* | head -1)
-      echo "=== [dontaudit diag 1/4] on-disk mls store binary just after module build, dontaudit still default-on: $mls_policy ==="
-      echo "udev_t dontaudit rule count: $(sesearch --dontaudit -s udev_t "$mls_policy" 2>/dev/null | wc -l)"
-      echo "NetworkManager_t dontaudit rule count: $(sesearch --dontaudit -s NetworkManager_t "$mls_policy" 2>/dev/null | wc -l)"
 
   - name: Reboot to apply MLS and relabel
     how: shell
@@ -134,352 +55,32 @@ prepare:
       prepare_for_mls_reboot
       prepare_for_mls_force_relabel
 
-  - name: Switch to Enforcing and reboot again (tests acceptance criterion 1)
+  - name: Switch to Enforcing and reboot again
     how: shell
     script: |
       if [ "${TMT_REBOOT_COUNT:-0}" -eq 0 ]; then
-          # selinux-autorelabel.service re-decides a relabel is needed on
-          # this boot regardless of /.autorelabel's state; running it
-          # again would just redundantly repeat the relabel
-          # prepare_for_mls_force_relabel() already did above.
           rm -f /.autorelabel
           systemctl mask selinux-autorelabel.service
 
-          # udev's device processing for this guest's root disk is
-          # unreliable under a freshly enforcing mls kernel and can take
-          # well past the default device-unit timeout (both the by-uuid
-          # symlinks *and* the raw partition device unit itself), taking
-          # local-fs.target down with it -- a dead end, since emergency
-          # mode has no sshd and a locked root. Resolve each fstab UUID to
-          # its raw device now, while still permissive and blkid is known
-          # to work, and make every non-root mount nofail with a generous
-          # device-timeout so a still-slow device delays rather than fails
-          # the boot.
+          # WORKAROUND: Mitigate udev MLS overhead timing race.
+          # Resolve fstab UUIDs to raw devices and extend timeouts to prevent local-fs.target collapse.
           cp /etc/fstab /etc/fstab.orig
-          awk '!/^#/ && NF >= 4 && $3 != "swap" && $1 ~ /^UUID=/ { sub(/^UUID=/, "", $1); print $1 }' \
-              /etc/fstab.orig | sort -u | while read -r uuid; do
-              dev=$(blkid -U "$uuid" 2>/dev/null) && [ -n "$dev" ] && \
-                  sed -i "s#UUID=$uuid#$dev#g" /etc/fstab
+          awk '!/^#/ && NF >= 4 && $3 != "swap" && $1 ~ /^UUID=/ { sub(/^UUID=/, "", $1); print $1 }' /etc/fstab.orig | sort -u | while read -r uuid; do
+              dev=$(blkid -U "$uuid" 2>/dev/null) && [ -n "$dev" ] && sed -i "s#UUID=$uuid#$dev#g" /etc/fstab
           done
           cp /etc/fstab /etc/fstab.rewritten
-          awk '!/^#/ && NF >= 4 && $3 != "swap" { $4 = $4",nofail,x-systemd.device-timeout=90" } { print }' \
-              /etc/fstab.rewritten > /etc/fstab
+          awk '!/^#/ && NF >= 4 && $3 != "swap" { $4 = $4",nofail,x-systemd.device-timeout=90" } { print }' /etc/fstab.rewritten > /etc/fstab
 
-          # Re-tested dropping these marks a second time (round 2) to
-          # close a real gap in round 1's methodology (commit a5b3af25,
-          # restored in 28c50dae after 3/3 reboot-timeout failures):
-          # round 1 only ever checked `ausearch`, the persistent audit
-          # log, which a denial firing before auditd is up (very
-          # plausible for udev's early root-disk processing) would never
-          # reach even though the kernel's ring buffer would still have
-          # it via printk.
-          #
-          # Round 2 dropped the marks again (still with dontaudit off)
-          # and additionally: (a) re-examined all three round-1 failures'
-          # Testing Farm serial console logs, which mirror the kernel
-          # ring buffer continuously from the very first boot message,
-          # independent of auditd's readiness; (b) ran a fourth,
-          # independent attempt with the verification step below
-          # checking dmesg, journalctl -k -b, journalctl -b, and
-          # journalctl -b -1 -k directly, not just ausearch, plus a
-          # bumped 1800s tmt-reboot timeout in case the earlier failures
-          # were merely slow rather than truly stuck.
-          #
-          # Result: 4/4 marks-dropped runs failed identically (the
-          # fourth again via reboot timeout, even at 1800s, ruling out
-          # "just needed more patience"), and none of the four -- across
-          # console logs, or whatever of dmesg/journalctl the guest ever
-          # got far enough to have -- show a single udev_t or
-          # NetworkManager_t AVC. This is not "no chance to log
-          # anything": the same logs *do* show real AVCs from unrelated
-          # mls gaps in the very same early-boot window (systemd_*_
-          # generator_t, kernel_t/kmod_t, systemd_oomd_t,
-          # systemd_tmpfiles_t -- harmless pre-existing noise, since
-          # dontaudit off doesn't itself deny anything), so the audit
-          # pipeline plainly was capturing denials that early; there
-          # just never was one for either of these two domains. The
-          # actual, exactly-reproduced failure signature in all four is
-          # dev-nvme0n1p2.device and dev-nvme0n1p3.device independently
-          # timing out waiting for udev, taking var/boot/home (and, via
-          # cloud-init needing /var, the guest's real network config)
-          # down with them -- contrasted with the one clean run on this
-          # same infra with marks on (516a17dc-46d9-492c-bee9-697b8806f305),
-          # whose console log shows the same devices ready within ~10s.
-          #
-          # Conclusion, after three rounds of testing: there is no
-          # missing allow rule that explains the udev-timeout failure
-          # below -- nothing SELinux-related is being denied in that
-          # failure path, in any of dmesg/journalctl -k -b/journalctl -b/
-          # journalctl -b -1 -k/ausearch, across five independent
-          # marks-dropped attempts (commits a5b3af25, 837f5663,
-          # c9028fb8). All five failed identically: dev-nvme0n1p2.device
-          # and dev-nvme0n1p3.device time out waiting for udev, taking
-          # var/boot/home (and cloud-init's, hence the guest's real
-          # network config) down with them, with zero udev_t/
-          # NetworkManager_t AVCs anywhere.
-          #
-          # The one real udev_t gap this investigation did turn up --
-          # "avc: denied { sys_ptrace } ... comm=udevadm ...
-          # scontext=...udev_t... tcontext=...udev_t...
-          # tclass=capability permissive=1", upstream udev.te missing
-          # self:capability sys_ptrace from an otherwise fairly complete
-          # list -- is fixed properly via mls-udev-ptrace-fix/ (loaded
-          # alongside the other two local modules above) since it's a
-          # real, legitimate gap. But it was sporadic (one of six boots
-          # inspected) and anti-correlated with the hang (present on a
-          # boot that passed, absent from every boot that hit the
-          # timeout), and fixing it and dropping the marks again
-          # (commit c9028fb8) reproduced the identical udev-timeout
-          # failure a fifth time -- confirming it, as expected, was
-          # never the cause.
-          #
-          # So: marking these two domains permissive is empirically,
-          # reproducibly (5/5 fail without, vs the passing runs with)
-          # necessary for udev to finish enumerating this guest's disk
-          # in time on this infra, for reasons that don't show up as
-          # denials -- most plausibly the raw per-syscall cost of mls
-          # permission computation (much larger category range than
-          # targeted) in these two domains' device/network setup code
-          # paths, tipping already-marginal udev timing over the 90s
-          # edge. Restoring both marks; a TE change cannot fix a timing
-          # effect that has no corresponding denial.
-          #
-          # Round 4 (commits 9649d86e, 71de23b2) closed the one
-          # remaining methodological gap in all of the above: every
-          # "zero AVCs" finding relied on `semanage dontaudit off -N`
-          # actually having stripped dontaudit rules from the exact
-          # policy binary this plan boots into, which was never
-          # directly verified against the compiled policy -- only
-          # inferred from `semanage`'s documented behavior, despite
-          # this plan using its own bespoke staged-build/`semodule -s
-          # <store> -n -i` flow rather than the stock semanage-managed
-          # module lifecycle the "off" flag's rebuild-on-commit
-          # behavior is normally exercised through. Verified directly
-          # with `sesearch --dontaudit -s udev_t/NetworkManager_t`
-          # against (a) the on-disk mls store binary right after this
-          # exact "off -N" call and (b) the actual loaded kernel policy
-          # at the point the verify step below runs, i.e. the identical
-          # command and position used in every prior round: both were
-          # 0 for both domains (request ccbb8492-feea-41e8-9bdf-
-          # 553101a015d0), against a 140/157 baseline for the same
-          # freshly-built store before "off" is ever called. dontaudit
-          # genuinely was off the whole time; the "zero AVCs" findings
-          # above were not an artifact of denials being silently
-          # dontaudited. (The first attempt at this check,
-          # e38808dd-0659-4caa-8048-c228c7cca14b, used a plain `semodule
-          # -B` as an extra rebuild-confirmation step and measured 0/0
-          # right after "off -N" but 140/157 again right after that
-          # unqualified rebuild, with the post-reboot kernel policy
-          # matching the reintroduced 140/157 -- i.e. plain `-B`, unlike
-          # `semanage dontaudit off`, does not persist/consult the
-          # dontaudit-disabled preference and silently restores it. That
-          # was this investigation's own mistake, not a finding about
-          # the shipped plan below, which never called plain `semodule
-          # -B` at all; fixed to the correct `semodule -DB` -- `-D` is a
-          # distinct rebuild MODE per `semodule --help`, not a modifier
-          # of `-B` -- which the second attempt confirmed reliably
-          # keeps both checks at 0/0.)
-          # Round 5 EXPERIMENT (re-examining the round-4 conclusion from a
-          # different angle): a zero-denial finding only shows nothing was
-          # *blocked* -- it says nothing about whether the mlsconstrain
-          # dominance math is being computed (and costing cycles) on every
-          # *allowed* access too. Live-policy verification (see the new
-          # diagnostics at the end of the Verify step, and the round-5 plan
-          # commit message) confirmed: udev_t/NetworkManager_t both run at
-          # the full s0-s15:c0.c1023 range; udev_t already holds
-          # mlsfileread/mlsfilewrite/mlsfileupgrade/mlsfiledowngrade
-          # (verified live via `seinfo -x -t`, matching upstream udev.te's
-          # mls_file_read_all_levels()/mls_file_write_all_levels()/
-          # mls_file_upgrade()/mls_file_downgrade() calls -- extending the
-          # prior note, which only checked read); and the live
-          # mlsconstrain expressions for chr_file/blk_file/dir (`seinfo
-          # --constrain`) match upstream refpolicy's policy/mls verbatim.
-          #
-          # Reading the actual kernel constraint evaluator
-          # (security/selinux/ss/services.c:constraint_expr_eval) shows it
-          # is a postfix stack machine with no short-circuit evaluation --
-          # every operand of every AND/OR is unconditionally evaluated,
-          # including the `mls_level_dom()` dominance check, regardless of
-          # whether a `mlsfileread`-style trust attribute would make an
-          # "or" branch trivially true. So approach 1 (adding a missing
-          # trust attribute to short-circuit the constraint) cannot reduce
-          # per-syscall cost even in principle -- it only changes the
-          # allow/deny outcome -- and there's no missing attribute to add
-          # here besides (udev_t already has the full set). Not pursuing
-          # it further.
-          #
-          # `mls_level_dom()` itself (security/selinux/ss/mls_types.h) is
-          # also just a sensitivity-integer compare plus one
-          # `ebitmap_contains()` call; for udev_t's single contiguous
-          # 0-1023 category node this is a handful of word comparisons
-          # either way, independent of whether the range is s0 alone or
-          # the full s0-s15:c0.c1023 -- so approach 2's "smaller range,
-          # therefore cheaper per-op dominance math" framing doesn't hold
-          # up either, on pure kernel-source grounds. (Testing it
-          # empirically anyway below, since a range restriction could
-          # still affect other costs -- e.g. context string handling --
-          # not captured by that analysis.)
-          #
-          # Round 5a EXPERIMENT RESULT: tested the *cheapest* candidate
-          # first, per the investigation's own priority: AVC cache
-          # pressure. Fedora's AVC hash table defaults to 512
-          # slots/threshold (AVC_DEF_CACHE_THRESHOLD in
-          # security/selinux/avc.c); mls's much larger SID space (every
-          # distinct range is a distinct SID) could plausibly thrash a
-          # cache sized for targeted/mcs's smaller SID space, forcing
-          # repeated slow-path avtab/sidtab lookups during udev's early
-          # device-enumeration burst. Raised it (32x, to 16384) via a
-          # dedicated early unit ordered before systemd-udevd.service,
-          # marks OFF, 3 independent Testing Farm runs
-          # (2a0591d0-5c6a-4c88-86ca-cf38add08111,
-          # 5f50839a-efe4-4cbd-878c-e8d7996dd27e,
-          # ccdfaf3a-c1cd-4382-abdb-073c090afce3).
-          #
-          # Result: 0/3. All three failed identically to the five prior
-          # marks-dropped attempts -- verified directly against each
-          # run's serial console log, not just the overall pass/fail:
-          # dev-nvme0n1p2.device and dev-nvme0n1p3.device time out
-          # waiting for udev at the configured 90s
-          # (x-systemd.device-timeout=90), var.mount fails as a
-          # dependency, and (in all three runs) the device start job
-          # visibly *retries* several more times (8 additional
-          # dev-nvme0n1p3.device timeout cycles counted in each log)
-          # without ever succeeding, until tmt's own reboot-reconnect
-          # logic gives up at the 1200s ceiling with no SSH ever coming
-          # back -- a harder failure than earlier rounds' "boot
-          # eventually recovers in degraded form" signature, not a
-          # softer one. Raising the AVC cache size did not help, and if
-          # anything this exact commit's 3/3 signature is slightly worse
-          # than previous marks-off attempts. Cache pressure ruled out
-          # as the driver; block removed.
-          #
-          # Round 5b EXPERIMENT (approach 2 from the task: force udev_t
-          # to a single MLS level via range_transition, now that
-          # approach 1 and the cache-pressure angle are both ruled out).
-          # Fetched udev.te from fedora-selinux/selinux-policy@rawhide
-          # directly and found a genuine, verifiable asymmetry: it
-          # already contains a range-restriction call for udev_t --
-          #   ifdef(`enable_mcs',`
-          #    kernel_ranged_domtrans_to(udev_t, udev_exec_t, s0 - mcs_systemhigh)
-          #    init_ranged_daemon_domain(udev_t, udev_exec_t, s0 - mcs_systemhigh)
-          #   ')
-          # -- but wrapped in `enable_mcs` only, even though the two
-          # interfaces it calls (kernel.if/init.if) both have a fully
-          # worked-out `enable_mls` branch too (confirmed by reading
-          # both interfaces directly). Under mls this whole block is
-          # skipped, so udev_t falls through to the plain, unranged
-          # kernel_domtrans_to()/init_daemon_domain() calls a few lines
-          # above it and inherits whatever range kernel_t/init_t are
-          # running at when they exec it -- the full s0-s15:c0.c1023
-          # clearance, exactly as this investigation's live `ps -eZ`/
-          # `seinfo -x -t` checks found.
-          #
-          # However, tracing what "s0 - mcs_systemhigh" and its literal
-          # mls equivalent "s0 - mls_systemhigh" (used elsewhere in this
-          # same upstream policy, e.g. xserver.te, init.if's
-          # init_spec_domtrans_script()/init_domtrans_script()) actually
-          # expand to (policy/support/mls_mcs_macros.spt:
-          # mls_systemhigh = s<last_sens>:c0.c<last_cat>, i.e. the top
-          # of the whole range) shows this specific macro call is *not*
-          # a real restriction under either mcs or mls -- both spell out
-          # the complete, unrestricted range top-to-bottom. Porting it
-          # verbatim would be a no-op, consistent with (and further
-          # reinforcing) round 5's kernel-source finding that dominance-
-          # math cost doesn't depend on range width. So a temporary
-          # mls-udev-range-fix/udevrange.te module instead pinned udev_t
-          # to a genuinely narrower, single low level -- plain "s0", no
-          # dash, no categories -- which upstream does not do for udev_t
-          # under either mcs or mls. Checked this against every
-          # mlsconstrain/mlsvalidatetrans expression in policy/mls before
-          # testing: udev_t's existing mlsfileread/mlsfilewrite/
-          # mlsfileupgrade/mlsfiledowngrade/mlsprocwrite attributes make
-          # every file op and every process *write* op an unconditional
-          # pass independent of its own range, and the one class without
-          # a blanket attribute (process reads: getsched/getpgid/
-          # getattr/ptrace-read/share) already gated solely on
-          # `l1 dom l2`, where l1 is udev_t's range's low end -- s0
-          # whether pinned or left at the full range, so identical
-          # either way.
-          #
-          # Round 5b RESULT: built and loaded udevrange.te (range_transition
-          # kernel_t/init_t udev_exec_t:process s0;), both permissive
-          # marks off, 3 independent Testing Farm runs
-          # (136cfa6c-f301-4abe-835f-ef662cd276c8,
-          # 76fdb4ed-c1d3-4c0c-b620-55c1c55426dc,
-          # ac19dd15-88cc-489b-890f-cfe048739225). Result: 0/3, and
-          # each run's console log confirms both halves of the
-          # pre-test safety analysis and the failure mode itself
-          # directly: (a) no new udev_t/NetworkManager_t AVCs anywhere
-          # in any of the three logs -- the only denials present are
-          # the same pre-existing systemd_*_generator_t/kernel_t-
-          # kmod_t/systemd_oomd_t/systemd_tmpfiles_t noise this
-          # investigation has already characterized as harmless and
-          # unrelated in every prior round, confirming the range pin
-          # itself introduced no regression, exactly as the safety
-          # analysis predicted; but (b) all three runs still hit the
-          # identical dev-nvme0n1p2.device/dev-nvme0n1p3.device timeout
-          # -> var.mount dependency failure -> repeated retry signature
-          # as every other marks-dropped attempt this investigation has
-          # run (one run's log even shows var.mount briefly mounting
-          # successfully once before being unmounted and re-timing-out,
-          # underscoring this is a retry loop, not a one-shot failure),
-          # ending in the same reboot-reconnect timeout with no SSH
-          # ever regained. A genuinely narrower target range does not
-          # fix the boot -- consistent with the kernel-source finding
-          # above that per-op dominance-check cost doesn't scale with
-          # range width, this rules out approach 2 empirically as well.
-          # udevrange.te removed again (module and directory both
-          # deleted) since it provides no benefit and isn't worth
-          # carrying as a permanent deviation from upstream udev.te.
-          #
-          # Overall round-5 conclusion: both concrete, policy-grounded
-          # theories from this round of investigation -- AVC cache
-          # pressure, and per-syscall MLS dominance-math cost being
-          # proportional to udev_t's category-range width -- were
-          # tested empirically (not just reasoned about) and both
-          # failed to fix the boot, on top of approach 1 (constraint
-          # short-circuiting) already being ruled out on kernel-source
-          # grounds before ever needing a policy change. Combined with
-          # rounds 1-4's exhaustive denial-based checking, this
-          # investigation has now tested every concrete mechanism
-          # anyone has proposed for *why* mls enforcing mode's per-
-          # syscall overhead specifically breaks udev's root-disk
-          # enumeration on this infra, without finding one that yields
-          # a policy fix. The permissive marks remain the only
-          # mechanism that reliably resolves it; restoring them (and
-          # keeping the fstab UUID-rewrite/nofail/timeout workaround,
-          # which was never in question this round).
+          # WORKAROUND: Mark timing-sensitive domains permissive.
+          # Disabling dontaudit ensures we catch any hidden AVCs.
           semanage permissive -n -a udev_t
           semanage permissive -n -a NetworkManager_t
           semanage dontaudit off -N
 
-          # Verification + guard (see round-4 note above for the full
-          # methodology and evidence): `-N` on `semanage dontaudit off`
-          # still triggers a rebuild of the mls store's on-disk policy
-          # binary right here, it only skips hot-reloading it into the
-          # currently-running (pre-reboot) kernel -- irrelevant anyway,
-          # since the reboot below always loads a fresh copy from disk.
-          # Check 2/4 captures that rebuild's dontaudit count directly.
-          # `semodule -DB` immediately after is a guaranteed-correct
-          # rebuild-and-strip-dontaudit in one step (unlike plain `-B`,
-          # which silently re-includes dontaudit -- see the round-4
-          # note), guarding against a future step added between here
-          # and the reboot inadvertently re-including it; check 3/4
-          # confirms this call itself keeps both domains at zero.
-          mls_policy=$(ls -t /etc/selinux/mls/policy/policy.* | head -1)
-          echo "=== [dontaudit diag 2/4] on-disk mls store binary right after 'semanage dontaudit off -N', before any extra rebuild: $mls_policy ==="
-          echo "udev_t dontaudit rule count: $(sesearch --dontaudit -s udev_t "$mls_policy" 2>/dev/null | wc -l)"
-          echo "NetworkManager_t dontaudit rule count: $(sesearch --dontaudit -s NetworkManager_t "$mls_policy" 2>/dev/null | wc -l)"
-
+          # Use -DB to guarantee a policy rebuild without silently restoring dontaudit rules
           semodule -DB
-          mls_policy=$(ls -t /etc/selinux/mls/policy/policy.* | head -1)
-          echo "=== [dontaudit diag 3/4] on-disk mls store binary after explicit 'semodule -DB': $mls_policy ==="
-          echo "udev_t dontaudit rule count: $(sesearch --dontaudit -s udev_t "$mls_policy" 2>/dev/null | wc -l)"
-          echo "NetworkManager_t dontaudit rule count: $(sesearch --dontaudit -s NetworkManager_t "$mls_policy" 2>/dev/null | wc -l)"
 
-          # Raise the audit backlog so early-boot AVCs survive to be read
-          # by the verification step below instead of being dropped once
-          # the kernel's default 64-entry backlog fills.
+          # Raise audit backlog so early-boot AVCs survive for the verification step
           grubby --update-kernel=ALL --args="audit_backlog_limit=8192"
 
           cloud-init clean --logs
@@ -493,90 +94,14 @@ prepare:
       echo "=== SELinux status ==="
       sestatus
 
-      # DIAGNOSTIC [dontaudit diag 4/4]: the ground truth for the whole
-      # investigation above -- the dontaudit rule count in the policy
-      # actually loaded into this running, enforcing kernel right now,
-      # at the exact point the AVC checks below (the same checks that
-      # found zero udev_t/NetworkManager_t denials across five prior
-      # marks-dropped runs) execute. If this is zero, dontaudit was
-      # genuinely off for those denials -- they didn't happen, they
-      # weren't silently swallowed. If nonzero, dontaudit rules for
-      # these domains were still active the whole time and would fully
-      # explain the absence of any denial in every log checked.
-      echo "=== dontaudit rules for udev_t/NetworkManager_t in the ACTIVE loaded kernel policy ==="
-      echo "udev_t dontaudit rule count: $(sesearch --dontaudit -s udev_t /sys/fs/selinux/policy 2>/dev/null | wc -l)"
-      echo "NetworkManager_t dontaudit rule count: $(sesearch --dontaudit -s NetworkManager_t /sys/fs/selinux/policy 2>/dev/null | wc -l)"
-      sesearch --dontaudit -s udev_t /sys/fs/selinux/policy 2>&1
-      sesearch --dontaudit -s NetworkManager_t /sys/fs/selinux/policy 2>&1
-
-      # Four independent sources, from most to least likely to have
-      # caught an AVC that fired before auditd (and thus the persistent
-      # audit log) was up: the kernel ring buffer directly (dmesg),
-      # journald's own capture of that same ring buffer (journalctl -k,
-      # which can have different retention/rotation behavior than a
-      # raw dmesg call), journald's full (non-kernel-only) log in case
-      # audit went through the userspace dispatcher instead, and
-      # finally ausearch's view of the persistent audit log. Grepping
-      # all four for both "avc:" and "denied" case-insensitively so
-      # nothing is missed by relying on exact message formatting.
-      echo "=== dmesg | grep -i 'avc:\\|denied' ==="
+      echo "=== dmesg | grep -i 'avc:\|denied' ==="
       dmesg 2>&1 | grep -i 'avc:\|denied' || echo "no matches in dmesg"
 
-      echo "=== journalctl -k -b | grep -i 'avc:\\|denied' ==="
-      journalctl -k -b 2>&1 | grep -i 'avc:\|denied' || echo "no matches in journalctl -k -b"
-
-      echo "=== journalctl -b | grep -i 'avc:\\|denied' ==="
-      journalctl -b 2>&1 | grep -i 'avc:\|denied' || echo "no matches in journalctl -b"
-
-      echo "=== journalctl -b -1 -k | grep -i 'avc:\\|denied' (previous boot, if available) ==="
-      journalctl -b -1 -k 2>&1 | grep -i 'avc:\|denied' || echo "no matches (or no previous boot available) in journalctl -b -1 -k"
+      echo "=== journalctl -k -b | grep -i 'avc:\|denied' ==="
+      journalctl -k -b 2>&1 | grep -i 'avc:\|denied' || echo "no matches in journalctl"
 
       echo "=== AVC/USER_AVC denials this boot (ausearch) ==="
       ausearch -m AVC,USER_AVC -ts boot 2>&1 || echo "no AVCs this boot"
-
-      # DIAGNOSTIC (round 5): re-examining the "no missing allow rule"
-      # conclusion above from a different angle -- a zero-denial finding
-      # only shows nothing was *blocked*; it says nothing about whether
-      # the mlsconstrain dominance math is being computed (and costing
-      # cycles) on every *allowed* access too. Gathering direct ground
-      # truth against the live loaded policy rather than trusting any
-      # prior round's notes, to check three concrete candidate causes:
-      # (1) udev_t/NetworkManager_t's actual constraint-exemption
-      # attributes, (2) their actual runtime MLS range, (3) whether the
-      # devices they process ever carry categories, before deciding
-      # whether any of this is worth building a policy change around.
-      echo "=== udev_t / NetworkManager_t actual running range (ps -eZ) ==="
-      ps -eZ | grep -E 'udev_t|NetworkManager_t' || echo "no matching running processes"
-
-      echo "=== udev_t attributes in the ACTIVE loaded kernel policy ==="
-      seinfo -x -t udev_t /sys/fs/selinux/policy 2>&1
-
-      echo "=== NetworkManager_t attributes in the ACTIVE loaded kernel policy ==="
-      seinfo -x -t NetworkManager_t /sys/fs/selinux/policy 2>&1
-
-      echo "=== mlsconstrain rules for chr_file (udev's actual device-node class) ==="
-      seinfo --constrain chr_file /sys/fs/selinux/policy 2>&1
-
-      echo "=== mlsconstrain rules for blk_file ==="
-      seinfo --constrain blk_file /sys/fs/selinux/policy 2>&1
-
-      echo "=== mlsconstrain rules for dir (udev also walks /dev, /sys, /run) ==="
-      seinfo --constrain dir /sys/fs/selinux/policy 2>&1
-
-      echo "=== mlsconstrain rules for the socket classes NetworkManager_t uses ==="
-      seinfo --constrain socket /sys/fs/selinux/policy 2>&1
-      seinfo --constrain netlink_route_socket /sys/fs/selinux/policy 2>&1
-
-      echo "=== labels on this guest's actual root-disk devices (ever categorized, or always s0?) ==="
-      ls -Z /dev/nvme0n1p2 /dev/nvme0n1p3 2>&1
-      ls -Z /dev/disk/by-uuid/ 2>&1
-
-      echo "=== devtmpfs mount options (dynamic per-node labeling vs static context=) ==="
-      mount | grep devtmpfs
-
-      echo "=== AVC cache size/pressure right now ==="
-      echo "cache_threshold: $(cat /sys/fs/selinux/avc/cache_threshold 2>&1)"
-      cat /sys/fs/selinux/avc/cache_stats 2>&1
 
 execute:
   how: tmt
@@ -589,9 +114,6 @@ execute:
 
     echo "=== cloud-init running domain (expected: cloud_init_t) ==="
     ps -eZ | grep -i cloud || true
-
-    echo "=== AVC/USER_AVC denials this boot ==="
-    ausearch -m AVC,USER_AVC -ts boot || echo "no AVCs this boot"
 
     echo "=== audit2allow suggestions for any denials above ==="
     ausearch -m AVC -ts boot 2>/dev/null | audit2allow || true
