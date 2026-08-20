@@ -5,7 +5,7 @@ description: |
     real enforcing mode (acceptance criterion 1), with cloud-init and
     networking both working normally under mls's stricter constraints.
 
-    Three local policy modules fix gaps in the stock mls policy that this
+    Four local policy modules fix gaps in the stock mls policy that this
     plan depends on and that Fedora's shipped mls build doesn't cover yet:
 
     - cloudform (mls-cloudinit-fix/): grants cloud-init the file, socket,
@@ -31,8 +31,15 @@ description: |
       switch step below), unrelated to acceptance criterion 1's actual
       boot-reliability issue -- fixed on its own merits since dontaudit
       off surfaces it.
+    - udevrange (mls-udev-range-fix/): EXPERIMENT, see the enforcing-
+      switch step below for the full rationale and evidence -- pins
+      udev_t to a single MLS level (s0) via range_transition, instead
+      of the full clearance range it inherits by default under mls
+      (upstream udev.te's own range-restriction call is enable_mcs-only
+      and, per that step's analysis, wouldn't actually restrict
+      anything even if ported verbatim to mls).
 
-    All three are checked into this plan as standalone third-party module
+    All four are checked into this plan as standalone third-party module
     sources, built with the standard `/usr/share/selinux/devel/Makefile`
     workflow and loaded into the guest's mls store with `semodule -i`, so
     there's no runtime dependency on GitHub or a custom selinux-policy
@@ -94,16 +101,17 @@ prepare:
       cp $TMT_TREE/tmt/mls-cloudinit-fix/cloudform.fc .
       cp $TMT_TREE/tmt/mls-ssh-pipes-fix/mlssshpipes.te .
       cp $TMT_TREE/tmt/mls-udev-ptrace-fix/udevptrace.te .
+      cp $TMT_TREE/tmt/mls-udev-range-fix/udevrange.te .
 
-      make -f /usr/share/selinux/devel/Makefile cloudform.pp mlssshpipes.pp udevptrace.pp
+      make -f /usr/share/selinux/devel/Makefile cloudform.pp mlssshpipes.pp udevptrace.pp udevrange.pp
 
       # -n: build these into the (currently inactive) mls store without
       # hot-reloading the live kernel, which is still running -- and
       # still enforcing -- the old targeted policy at this point. The
       # mls store only becomes the active kernel policy on the reboot in
       # the next step.
-      semodule -n -i cloudform.pp mlssshpipes.pp udevptrace.pp
-      semodule -l | grep -E '^(cloudform|mlssshpipes|udevptrace)\b'
+      semodule -n -i cloudform.pp mlssshpipes.pp udevptrace.pp udevrange.pp
+      semodule -l | grep -E '^(cloudform|mlssshpipes|udevptrace|udevrange)\b'
 
       # DIAGNOSTIC (methodological check on the dontaudit investigation
       # below): `-n` still rebuilds the mls store's on-disk compiled
@@ -313,50 +321,89 @@ prepare:
           # still affect other costs -- e.g. context string handling --
           # not captured by that analysis.)
           #
-          # This experiment tests the *cheapest* candidate first, per the
-          # investigation's own priority: AVC cache pressure. Fedora's
-          # AVC hash table defaults to 512 slots/threshold
-          # (AVC_DEF_CACHE_THRESHOLD in security/selinux/avc.c); mls's
-          # much larger SID space (every distinct range is a distinct
-          # SID) could plausibly thrash a cache sized for targeted/mcs's
-          # smaller SID space, forcing repeated slow-path avtab/sidtab
-          # lookups during udev's early device-enumeration burst. (Live
-          # cache_stats sampled *after* a successful marks-on boot showed
-          # a >99% hit rate and reclaim counts tracking allocations
-          # closely -- i.e. no thrashing evident post-boot -- but that
-          # doesn't rule out a transient spike during the specific ~90s
-          # early window this investigation cares about, so testing this
-          # directly rather than inferring from a post-hoc sample.)
+          # Round 5a EXPERIMENT RESULT: tested the *cheapest* candidate
+          # first, per the investigation's own priority: AVC cache
+          # pressure. Fedora's AVC hash table defaults to 512
+          # slots/threshold (AVC_DEF_CACHE_THRESHOLD in
+          # security/selinux/avc.c); mls's much larger SID space (every
+          # distinct range is a distinct SID) could plausibly thrash a
+          # cache sized for targeted/mcs's smaller SID space, forcing
+          # repeated slow-path avtab/sidtab lookups during udev's early
+          # device-enumeration burst. Raised it (32x, to 16384) via a
+          # dedicated early unit ordered before systemd-udevd.service,
+          # marks OFF, 3 independent Testing Farm runs
+          # (2a0591d0-5c6a-4c88-86ca-cf38add08111,
+          # 5f50839a-efe4-4cbd-878c-e8d7996dd27e,
+          # ccdfaf3a-c1cd-4382-abdb-073c090afce3).
           #
-          # Raising it via a dedicated early unit ordered before
-          # systemd-udevd.service, run in whatever domain init_t (PID 1)
-          # executes untransitioned custom units in -- verified by the
-          # cache_threshold value the Verify step already prints.
-          mkdir -p /etc/systemd/system
-          cat > /etc/systemd/system/mls-avc-cache-threshold.service <<'UNITEOF'
-      [Unit]
-      Description=EXPERIMENT - raise SELinux AVC cache threshold before udev starts
-      DefaultDependencies=no
-      Before=sysinit.target systemd-udevd.service
-      ConditionPathExists=/sys/fs/selinux/avc/cache_threshold
-
-      [Service]
-      Type=oneshot
-      ExecStart=/bin/sh -c 'echo 16384 > /sys/fs/selinux/avc/cache_threshold'
-      RemainAfterExit=yes
-
-      [Install]
-      WantedBy=sysinit.target
-      UNITEOF
-          systemctl enable mls-avc-cache-threshold.service
-
-          # EXPERIMENT: marks intentionally left OFF here to test whether
-          # the cache_threshold bump above (cheap, no rebuild needed) can
-          # replace them. If this fails identically to the five prior
-          # marks-dropped attempts, that's further evidence against AVC
-          # cache pressure as the driver and this block gets restored.
-          # semanage permissive -n -a udev_t
-          # semanage permissive -n -a NetworkManager_t
+          # Result: 0/3. All three failed identically to the five prior
+          # marks-dropped attempts -- verified directly against each
+          # run's serial console log, not just the overall pass/fail:
+          # dev-nvme0n1p2.device and dev-nvme0n1p3.device time out
+          # waiting for udev at the configured 90s
+          # (x-systemd.device-timeout=90), var.mount fails as a
+          # dependency, and (in all three runs) the device start job
+          # visibly *retries* several more times (8 additional
+          # dev-nvme0n1p3.device timeout cycles counted in each log)
+          # without ever succeeding, until tmt's own reboot-reconnect
+          # logic gives up at the 1200s ceiling with no SSH ever coming
+          # back -- a harder failure than earlier rounds' "boot
+          # eventually recovers in degraded form" signature, not a
+          # softer one. Raising the AVC cache size did not help, and if
+          # anything this exact commit's 3/3 signature is slightly worse
+          # than previous marks-off attempts. Cache pressure ruled out
+          # as the driver; block removed.
+          #
+          # Round 5b EXPERIMENT (approach 2 from the task: force udev_t
+          # to a single MLS level via range_transition, now that
+          # approach 1 and the cache-pressure angle are both ruled out).
+          # Fetched udev.te from fedora-selinux/selinux-policy@rawhide
+          # directly and found a genuine, verifiable asymmetry: it
+          # already contains a range-restriction call for udev_t --
+          #   ifdef(`enable_mcs',`
+          #    kernel_ranged_domtrans_to(udev_t, udev_exec_t, s0 - mcs_systemhigh)
+          #    init_ranged_daemon_domain(udev_t, udev_exec_t, s0 - mcs_systemhigh)
+          #   ')
+          # -- but wrapped in `enable_mcs` only, even though the two
+          # interfaces it calls (kernel.if/init.if) both have a fully
+          # worked-out `enable_mls` branch too (confirmed by reading
+          # both interfaces directly). Under mls this whole block is
+          # skipped, so udev_t falls through to the plain, unranged
+          # kernel_domtrans_to()/init_daemon_domain() calls a few lines
+          # above it and inherits whatever range kernel_t/init_t are
+          # running at when they exec it -- the full s0-s15:c0.c1023
+          # clearance, exactly as this investigation's live `ps -eZ`/
+          # `seinfo -x -t` checks found.
+          #
+          # However, tracing what "s0 - mcs_systemhigh" and its literal
+          # mls equivalent "s0 - mls_systemhigh" (used elsewhere in this
+          # same upstream policy, e.g. xserver.te, init.if's
+          # init_spec_domtrans_script()/init_domtrans_script()) actually
+          # expand to (policy/support/mls_mcs_macros.spt:
+          # mls_systemhigh = s<last_sens>:c0.c<last_cat>, i.e. the top
+          # of the whole range) shows this specific macro call is *not*
+          # a real restriction under either mcs or mls -- both spell out
+          # the complete, unrestricted range top-to-bottom. Porting it
+          # verbatim would be a no-op, consistent with (and further
+          # reinforcing) round 5's kernel-source finding that dominance-
+          # math cost doesn't depend on range width. So mls-udev-range-
+          # fix/udevrange.te (loaded alongside the other three local
+          # modules above) instead pins udev_t to a genuinely narrower,
+          # single low level -- plain "s0", no dash, no categories --
+          # which upstream does not do for udev_t under either mcs or
+          # mls. Checked this against every mlsconstrain/mlsvalidatetrans
+          # expression in policy/mls before testing (full reasoning in
+          # udevrange.te's header comment): udev_t's existing
+          # mlsfileread/mlsfilewrite/mlsfileupgrade/mlsfiledowngrade/
+          # mlsprocwrite attributes make every file op and every process
+          # *write* op an unconditional pass independent of its own
+          # range, and the one class without a blanket attribute
+          # (process reads: getsched/getpgid/getattr/ptrace-read/share)
+          # already gated solely on `l1 dom l2`, where l1 is udev_t's
+          # range's low end -- s0 whether pinned or left at the full
+          # range, so identical either way. Expected to be safe; testing
+          # empirically below to confirm, with both permissive marks
+          # still off.
           semanage dontaudit off -N
 
           # Verification + guard (see round-4 note above for the full
