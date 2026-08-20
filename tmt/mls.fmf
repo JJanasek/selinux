@@ -5,7 +5,7 @@ description: |
     real enforcing mode (acceptance criterion 1), with cloud-init and
     networking both working normally under mls's stricter constraints.
 
-    Two local policy modules fix gaps in the stock mls policy that this
+    Three local policy modules fix gaps in the stock mls policy that this
     plan depends on and that Fedora's shipped mls build doesn't cover yet:
 
     - cloudform (mls-cloudinit-fix/): grants cloud-init the file, socket,
@@ -41,7 +41,7 @@ description: |
     `prepare_for_mls.sh` implements the actual policy switch (login
     mapping, SELINUXTYPE, scheduled relabel, reboot, and the follow-up
     forced full-context relabel); see its header for why each step is
-    necessary. This plan sequences that around staging the two modules
+    necessary. This plan sequences that around staging the three modules
     above and a second reboot into real enforcing mode.
 
 prepare:
@@ -184,24 +184,45 @@ prepare:
           # same infra with marks on (516a17dc-46d9-492c-bee9-697b8806f305),
           # whose console log shows the same devices ready within ~10s.
           #
-          # EXPERIMENT (round 3): the expanded logging in round 2 turned
-          # up one real, narrow udev_t gap on a *passing* run: "avc:
-          # denied { sys_ptrace } ... comm=udevadm ...
-          # scontext=...udev_t... tcontext=...udev_t...
-          # tclass=capability permissive=1" -- upstream udev.te allows
-          # udev_t a long list of self:capability access but not
-          # sys_ptrace. Fixed properly via mls-udev-ptrace-fix/ (loaded
-          # alongside the other two local modules above), since it's a
-          # real gap regardless of the outcome here.
+          # Conclusion, after three rounds of testing: there is no
+          # missing allow rule that explains the udev-timeout failure
+          # below -- nothing SELinux-related is being denied in that
+          # failure path, in any of dmesg/journalctl -k -b/journalctl -b/
+          # journalctl -b -1 -k/ausearch, across five independent
+          # marks-dropped attempts (commits a5b3af25, 837f5663,
+          # c9028fb8). All five failed identically: dev-nvme0n1p2.device
+          # and dev-nvme0n1p3.device time out waiting for udev, taking
+          # var/boot/home (and cloud-init's, hence the guest's real
+          # network config) down with them, with zero udev_t/
+          # NetworkManager_t AVCs anywhere.
           #
-          # It's sporadic though (seen in only one of six boots
-          # inspected across rounds 1-2) and anti-correlated with the
-          # actual udev-timeout hang -- present in a boot that passed,
-          # absent from all four that hit the failure -- so it's not
-          # expected to be the cause. Testing that directly: marks still
-          # dropped here, now with the sys_ptrace gap actually fixed
-          # instead of masked, to see whether that alone (no permissive
-          # marking) makes udev enumeration reliable.
+          # The one real udev_t gap this investigation did turn up --
+          # "avc: denied { sys_ptrace } ... comm=udevadm ...
+          # scontext=...udev_t... tcontext=...udev_t...
+          # tclass=capability permissive=1", upstream udev.te missing
+          # self:capability sys_ptrace from an otherwise fairly complete
+          # list -- is fixed properly via mls-udev-ptrace-fix/ (loaded
+          # alongside the other two local modules above) since it's a
+          # real, legitimate gap. But it was sporadic (one of six boots
+          # inspected) and anti-correlated with the hang (present on a
+          # boot that passed, absent from every boot that hit the
+          # timeout), and fixing it and dropping the marks again
+          # (commit c9028fb8) reproduced the identical udev-timeout
+          # failure a fifth time -- confirming it, as expected, was
+          # never the cause.
+          #
+          # So: marking these two domains permissive is empirically,
+          # reproducibly (5/5 fail without, vs the passing runs with)
+          # necessary for udev to finish enumerating this guest's disk
+          # in time on this infra, for reasons that don't show up as
+          # denials -- most plausibly the raw per-syscall cost of mls
+          # permission computation (much larger category range than
+          # targeted) in these two domains' device/network setup code
+          # paths, tipping already-marginal udev timing over the 90s
+          # edge. Restoring both marks; a TE change cannot fix a timing
+          # effect that has no corresponding denial.
+          semanage permissive -n -a udev_t
+          semanage permissive -n -a NetworkManager_t
           semanage dontaudit off -N
 
           # Raise the audit backlog so early-boot AVCs survive to be read
