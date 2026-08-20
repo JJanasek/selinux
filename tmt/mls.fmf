@@ -236,46 +236,59 @@ prepare:
           # paths, tipping already-marginal udev timing over the 90s
           # edge. Restoring both marks; a TE change cannot fix a timing
           # effect that has no corresponding denial.
+          #
+          # Round 4 (commits 9649d86e, 71de23b2) closed the one
+          # remaining methodological gap in all of the above: every
+          # "zero AVCs" finding relied on `semanage dontaudit off -N`
+          # actually having stripped dontaudit rules from the exact
+          # policy binary this plan boots into, which was never
+          # directly verified against the compiled policy -- only
+          # inferred from `semanage`'s documented behavior, despite
+          # this plan using its own bespoke staged-build/`semodule -s
+          # <store> -n -i` flow rather than the stock semanage-managed
+          # module lifecycle the "off" flag's rebuild-on-commit
+          # behavior is normally exercised through. Verified directly
+          # with `sesearch --dontaudit -s udev_t/NetworkManager_t`
+          # against (a) the on-disk mls store binary right after this
+          # exact "off -N" call and (b) the actual loaded kernel policy
+          # at the point the verify step below runs, i.e. the identical
+          # command and position used in every prior round: both were
+          # 0 for both domains (request ccbb8492-feea-41e8-9bdf-
+          # 553101a015d0), against a 140/157 baseline for the same
+          # freshly-built store before "off" is ever called. dontaudit
+          # genuinely was off the whole time; the "zero AVCs" findings
+          # above were not an artifact of denials being silently
+          # dontaudited. (The first attempt at this check,
+          # e38808dd-0659-4caa-8048-c228c7cca14b, used a plain `semodule
+          # -B` as an extra rebuild-confirmation step and measured 0/0
+          # right after "off -N" but 140/157 again right after that
+          # unqualified rebuild, with the post-reboot kernel policy
+          # matching the reintroduced 140/157 -- i.e. plain `-B`, unlike
+          # `semanage dontaudit off`, does not persist/consult the
+          # dontaudit-disabled preference and silently restores it. That
+          # was this investigation's own mistake, not a finding about
+          # the shipped plan below, which never called plain `semodule
+          # -B` at all; fixed to the correct `semodule -DB` -- `-D` is a
+          # distinct rebuild MODE per `semodule --help`, not a modifier
+          # of `-B` -- which the second attempt confirmed reliably
+          # keeps both checks at 0/0.)
           semanage permissive -n -a udev_t
           semanage permissive -n -a NetworkManager_t
           semanage dontaudit off -N
 
-          # DIAGNOSTIC + FIX (methodological check on whether the "off"
-          # call above actually strips dontaudit rules from what this
-          # bespoke, non-semodule-managed staged-build plan boots into,
-          # rather than just recording a preference some other rebuild
-          # in the sequence might not reflect). `-N` on `semanage
-          # dontaudit off` still triggers libsemanage to rebuild the mls
-          # store's on-disk policy binary right here -- it only skips
-          # the final hot-reload-into-the-running-kernel step, which
-          # doesn't matter anyway since the reboot below loads a fresh
-          # copy from disk regardless. Check 2/4 captures that rebuilt
-          # binary's dontaudit count *before* any extra rebuild of our
-          # own, to see whether "off -N" alone was actually sufficient.
-          #
-          # IMPORTANT, found by actually running this (request
-          # e38808dd-0659-4caa-8048-c228c7cca14b): a plain `semodule -B`
-          # here is the WRONG belt-and-suspenders call and actively
-          # undoes the fix. `-B` alone rebuilds from the modules with
-          # dontaudit back at its compiled-in default (on) -- it does
-          # NOT persist/consult the "off" preference `semanage
-          # dontaudit off` set. That run measured 0/0 right after "off
-          # -N" (check 2/4 below) but 140/157 again right after an
-          # unqualified `semodule -B` (a mistake this plan's own history
-          # made and is documenting so it doesn't get repeated), and
-          # crucially the *post-reboot active kernel policy* (diag 4/4
-          # in the verify step) matched that reintroduced 140/157, i.e.
-          # the boot genuinely ran with dontaudit back on. The correct
-          # explicit rebuild primitive is `semodule -D` (--
-          # disable_dontaudit, a distinct MODE from plain -B per
-          # `semodule --help`) combined with `-B`: `semodule -DB`
-          # rebuilds *and* strips dontaudit in the same step, unlike
-          # `-B` by itself. Check 3/4 confirms that specifically. If
-          # check 2/4 and 3/4 agree (both zero), "off -N" alone was
-          # already sufficient and this call is a redundant-but-safe
-          # no-op; either way this is now the guaranteed-correct guard
-          # against a future added step between here and the reboot
-          # silently re-including dontaudit the way plain `-B` did.
+          # Verification + guard (see round-4 note above for the full
+          # methodology and evidence): `-N` on `semanage dontaudit off`
+          # still triggers a rebuild of the mls store's on-disk policy
+          # binary right here, it only skips hot-reloading it into the
+          # currently-running (pre-reboot) kernel -- irrelevant anyway,
+          # since the reboot below always loads a fresh copy from disk.
+          # Check 2/4 captures that rebuild's dontaudit count directly.
+          # `semodule -DB` immediately after is a guaranteed-correct
+          # rebuild-and-strip-dontaudit in one step (unlike plain `-B`,
+          # which silently re-includes dontaudit -- see the round-4
+          # note), guarding against a future step added between here
+          # and the reboot inadvertently re-including it; check 3/4
+          # confirms this call itself keeps both domains at zero.
           mls_policy=$(ls -t /etc/selinux/mls/policy/policy.* | head -1)
           echo "=== [dontaudit diag 2/4] on-disk mls store binary right after 'semanage dontaudit off -N', before any extra rebuild: $mls_policy ==="
           echo "udev_t dontaudit rule count: $(sesearch --dontaudit -s udev_t "$mls_policy" 2>/dev/null | wc -l)"
