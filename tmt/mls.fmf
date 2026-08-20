@@ -132,14 +132,15 @@ prepare:
                   sed -i "s#UUID=$uuid#$dev#g" /etc/fstab
           done
           cp /etc/fstab /etc/fstab.rewritten
-          awk '!/^#/ && NF >= 4 && $3 != "swap" { $4 = $4",nofail,x-systemd.device-timeout=240" } { print }' \
+          awk '!/^#/ && NF >= 4 && $3 != "swap" { $4 = $4",nofail,x-systemd.device-timeout=90" } { print }' \
               /etc/fstab.rewritten > /etc/fstab
 
-          # DIAGNOSTIC (temporary): keep udev_t/NetworkManager_t fully
-          # enforcing and disable dontaudit instead of marking them
-          # permissive, to check whether a real, dontaudit-suppressed
-          # denial -- not just raw MLS AVC-computation overhead -- is
-          # behind the device-readiness delay. -N defers the reload.
+          # DIAGNOSTIC (temporary): keep both the previously-working
+          # permissive marks *and* dontaudit off, so if permissive is
+          # bypassing a real would-be-denied check, it now has to show up
+          # in the audit log as permissive=1 instead of being swallowed.
+          semanage permissive -n -a udev_t
+          semanage permissive -n -a NetworkManager_t
           semanage dontaudit off -N
 
           # Raise the audit backlog so early-boot AVCs survive to be read
