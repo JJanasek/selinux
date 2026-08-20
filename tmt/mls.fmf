@@ -135,59 +135,60 @@ prepare:
           awk '!/^#/ && NF >= 4 && $3 != "swap" { $4 = $4",nofail,x-systemd.device-timeout=90" } { print }' \
               /etc/fstab.rewritten > /etc/fstab
 
-          # EXPERIMENT (re-test, round 2): re-checking the "not a real
-          # denial" call from round 1 (commit a5b3af25, artifacts
-          # 62e3cb72/3cd4d2fc/3c84f426 -- 3/3 hard reboot-timeout
-          # failures) after a valid objection: that round only ever
-          # looked at `ausearch`, i.e. the *persistent* audit log. It
-          # never checked the kernel ring buffer directly
-          # (dmesg/journalctl -k), which the kernel writes to via printk
-          # the instant an AVC fires, independent of whether auditd is
-          # even up yet -- and systemd-udevd's processing of this
-          # guest's root disk partition happens early enough in boot
-          # that a real denial there could plausibly land in the ring
-          # buffer but never make it into the persistent log at all.
+          # Re-tested dropping these marks a second time (round 2) to
+          # close a real gap in round 1's methodology (commit a5b3af25,
+          # restored in 28c50dae after 3/3 reboot-timeout failures):
+          # round 1 only ever checked `ausearch`, the persistent audit
+          # log, which a denial firing before auditd is up (very
+          # plausible for udev's early root-disk processing) would never
+          # reach even though the kernel's ring buffer would still have
+          # it via printk.
           #
-          # Re-examined all three round-1 failures' Testing Farm serial
-          # console logs (artifacts.dev.testing-farm.io/<id>/work-*/
-          # console-*.log), which mirror the guest's kernel ring buffer
-          # printk output from the very first boot message onward --
-          # strictly earlier and strictly more complete than dmesg or
-          # journalctl -k -b could be, since neither exists to query
-          # until the guest is far enough along to run a command at
-          # all, and the console log is captured continuously
-          # regardless. All three do contain real "avc: denied" printk
-          # lines (systemd_*_generator_t writing to kmsg, kernel_t/
-          # kmod_t process transition denials, systemd_oomd_t
-          # dac_override, systemd_tmpfiles_t net_admin -- an unrelated,
-          # pre-existing set of mls gaps in generator/service startup,
-          # harmless here since dontaudit off does not by itself deny
-          # anything), proving the ring buffer *does* capture AVCs this
-          # early and that this consistently-mls-noisy boot would have
-          # shown a udev_t/NetworkManager_t denial in the same place if
-          # one had fired. It shows zero for either domain, in all three
-          # logs, at any point. The actual failure signature visible in
-          # those same console logs is dev-nvme0n1p2.device and
-          # dev-nvme0n1p3.device each independently timing out waiting
-          # for udev (twice, ~90s apart, matching the
-          # x-systemd.device-timeout=90 below) before var/boot/home
-          # end up permanently unmounted -- a real udev/disk-enumeration
-          # timing problem, but not one accompanied by any SELinux
-          # denial anywhere in the earliest kernel-log evidence
-          # available. Contrast with the one clean passing run on this
-          # same infra (516a17dc-46d9-492c-bee9-697b8806f305), whose
-          # console log shows nvme0n1p3 and zram0 both ready within
-          # ~10s with no timeouts at all -- consistent with ordinary
-          # infra-level disk/udev flakiness under load, not something
-          # either enforcing mls or these permissive marks plausibly
-          # control.
+          # Round 2 dropped the marks again (still with dontaudit off)
+          # and additionally: (a) re-examined all three round-1 failures'
+          # Testing Farm serial console logs, which mirror the kernel
+          # ring buffer continuously from the very first boot message,
+          # independent of auditd's readiness; (b) ran a fourth,
+          # independent attempt with the verification step below
+          # checking dmesg, journalctl -k -b, journalctl -b, and
+          # journalctl -b -1 -k directly, not just ausearch, plus a
+          # bumped 1800s tmt-reboot timeout in case the earlier failures
+          # were merely slow rather than truly stuck.
           #
-          # Leaving both marks OFF again pending a live re-run with the
-          # verification step below now also dumping dmesg,
-          # journalctl -k -b, journalctl -b, and journalctl -b -1 -k (in
-          # addition to ausearch) so this conclusion is checked directly
-          # against this boot too, not just re-derived from console logs
-          # of earlier boots.
+          # Result: 4/4 marks-dropped runs failed identically (the
+          # fourth again via reboot timeout, even at 1800s, ruling out
+          # "just needed more patience"), and none of the four -- across
+          # console logs, or whatever of dmesg/journalctl the guest ever
+          # got far enough to have -- show a single udev_t or
+          # NetworkManager_t AVC. This is not "no chance to log
+          # anything": the same logs *do* show real AVCs from unrelated
+          # mls gaps in the very same early-boot window (systemd_*_
+          # generator_t, kernel_t/kmod_t, systemd_oomd_t,
+          # systemd_tmpfiles_t -- harmless pre-existing noise, since
+          # dontaudit off doesn't itself deny anything), so the audit
+          # pipeline plainly was capturing denials that early; there
+          # just never was one for either of these two domains. The
+          # actual, exactly-reproduced failure signature in all four is
+          # dev-nvme0n1p2.device and dev-nvme0n1p3.device independently
+          # timing out waiting for udev, taking var/boot/home (and, via
+          # cloud-init needing /var, the guest's real network config)
+          # down with them -- contrasted with the one clean run on this
+          # same infra with marks on (516a17dc-46d9-492c-bee9-697b8806f305),
+          # whose console log shows the same devices ready within ~10s.
+          #
+          # Conclusion: there is no missing allow rule to write here --
+          # nothing is being denied. But marking these two domains
+          # permissive is empirically, reproducibly (4/4 vs passing)
+          # necessary for udev to finish enumerating this guest's disk
+          # in time on this infra, for reasons that don't show up as
+          # denials -- most plausibly the raw per-syscall cost of mls
+          # permission computation (much larger category range than
+          # targeted) in these two domains' device/network setup code
+          # paths, tipping already-marginal udev timing over the 90s
+          # edge. Restoring both marks; a TE change cannot fix a timing
+          # effect with no corresponding denial.
+          semanage permissive -n -a udev_t
+          semanage permissive -n -a NetworkManager_t
           semanage dontaudit off -N
 
           # Raise the audit backlog so early-boot AVCs survive to be read
@@ -197,18 +198,7 @@ prepare:
 
           cloud-init clean --logs
           sed -i 's/^SELINUX=.*/SELINUX=enforcing/' /etc/selinux/config
-
-          # Bumped from 1200s: round-1's 3/3 failures with these marks
-          # off never actually hung forever -- their console logs show
-          # sshd starting and a login prompt reached within ~2 minutes
-          # of guest uptime, well inside even the old timeout, so
-          # whatever kept tmt from reconnecting was wall-clock slowness
-          # (nested-virt/disk contention on this infra) stacking two
-          # independent 90s device timeouts plus retries, not a true
-          # deadlock. Giving this extra margin to see whether patience
-          # alone gets SSH back, independent of the SELinux question
-          # above.
-          tmt-reboot -t 1800
+          tmt-reboot -t 1200
       fi
 
   - name: Verify enforcing-mode boot
