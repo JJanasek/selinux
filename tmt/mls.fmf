@@ -135,25 +135,59 @@ prepare:
           awk '!/^#/ && NF >= 4 && $3 != "swap" { $4 = $4",nofail,x-systemd.device-timeout=90" } { print }' \
               /etc/fstab.rewritten > /etc/fstab
 
-          # NOT masking a known policy denial: a passing run with these
-          # marks on and dontaudit off (artifacts
-          # 516a17dc-46d9-492c-bee9-697b8806f305) showed zero
-          # udev_t/NetworkManager_t AVCs anywhere in the full dump, so
-          # there is no known would-be-denied access being suppressed
-          # here. But dropping both marks (commit a5b3af25, artifacts
-          # 62e3cb72/3cd4d2fc/3c84f426) reproduced a hard failure 3/3
-          # times, always the same signature: dev-*.device (the root
-          # disk's raw partition unit) times out waiting for udev even
-          # with the 90s nofail grace period below, before the plan ever
-          # reaches the audit-verification step that would have caught a
-          # real denial -- so this isn't a case where permissive is
-          # silently swallowing a logged AVC; it never gets far enough
-          # to log one either way. Keeping both marks as a broad,
-          # empirically load-bearing safety margin against this
-          # early-boot udev/disk-readiness race, not as a workaround for
-          # any identified SELinux denial.
-          semanage permissive -n -a udev_t
-          semanage permissive -n -a NetworkManager_t
+          # EXPERIMENT (re-test, round 2): re-checking the "not a real
+          # denial" call from round 1 (commit a5b3af25, artifacts
+          # 62e3cb72/3cd4d2fc/3c84f426 -- 3/3 hard reboot-timeout
+          # failures) after a valid objection: that round only ever
+          # looked at `ausearch`, i.e. the *persistent* audit log. It
+          # never checked the kernel ring buffer directly
+          # (dmesg/journalctl -k), which the kernel writes to via printk
+          # the instant an AVC fires, independent of whether auditd is
+          # even up yet -- and systemd-udevd's processing of this
+          # guest's root disk partition happens early enough in boot
+          # that a real denial there could plausibly land in the ring
+          # buffer but never make it into the persistent log at all.
+          #
+          # Re-examined all three round-1 failures' Testing Farm serial
+          # console logs (artifacts.dev.testing-farm.io/<id>/work-*/
+          # console-*.log), which mirror the guest's kernel ring buffer
+          # printk output from the very first boot message onward --
+          # strictly earlier and strictly more complete than dmesg or
+          # journalctl -k -b could be, since neither exists to query
+          # until the guest is far enough along to run a command at
+          # all, and the console log is captured continuously
+          # regardless. All three do contain real "avc: denied" printk
+          # lines (systemd_*_generator_t writing to kmsg, kernel_t/
+          # kmod_t process transition denials, systemd_oomd_t
+          # dac_override, systemd_tmpfiles_t net_admin -- an unrelated,
+          # pre-existing set of mls gaps in generator/service startup,
+          # harmless here since dontaudit off does not by itself deny
+          # anything), proving the ring buffer *does* capture AVCs this
+          # early and that this consistently-mls-noisy boot would have
+          # shown a udev_t/NetworkManager_t denial in the same place if
+          # one had fired. It shows zero for either domain, in all three
+          # logs, at any point. The actual failure signature visible in
+          # those same console logs is dev-nvme0n1p2.device and
+          # dev-nvme0n1p3.device each independently timing out waiting
+          # for udev (twice, ~90s apart, matching the
+          # x-systemd.device-timeout=90 below) before var/boot/home
+          # end up permanently unmounted -- a real udev/disk-enumeration
+          # timing problem, but not one accompanied by any SELinux
+          # denial anywhere in the earliest kernel-log evidence
+          # available. Contrast with the one clean passing run on this
+          # same infra (516a17dc-46d9-492c-bee9-697b8806f305), whose
+          # console log shows nvme0n1p3 and zram0 both ready within
+          # ~10s with no timeouts at all -- consistent with ordinary
+          # infra-level disk/udev flakiness under load, not something
+          # either enforcing mls or these permissive marks plausibly
+          # control.
+          #
+          # Leaving both marks OFF again pending a live re-run with the
+          # verification step below now also dumping dmesg,
+          # journalctl -k -b, journalctl -b, and journalctl -b -1 -k (in
+          # addition to ausearch) so this conclusion is checked directly
+          # against this boot too, not just re-derived from console logs
+          # of earlier boots.
           semanage dontaudit off -N
 
           # Raise the audit backlog so early-boot AVCs survive to be read
@@ -163,7 +197,18 @@ prepare:
 
           cloud-init clean --logs
           sed -i 's/^SELINUX=.*/SELINUX=enforcing/' /etc/selinux/config
-          tmt-reboot -t 1200
+
+          # Bumped from 1200s: round-1's 3/3 failures with these marks
+          # off never actually hung forever -- their console logs show
+          # sshd starting and a login prompt reached within ~2 minutes
+          # of guest uptime, well inside even the old timeout, so
+          # whatever kept tmt from reconnecting was wall-clock slowness
+          # (nested-virt/disk contention on this infra) stacking two
+          # independent 90s device timeouts plus retries, not a true
+          # deadlock. Giving this extra margin to see whether patience
+          # alone gets SSH back, independent of the SELinux question
+          # above.
+          tmt-reboot -t 1800
       fi
 
   - name: Verify enforcing-mode boot
@@ -172,7 +217,29 @@ prepare:
       echo "=== SELinux status ==="
       sestatus
 
-      echo "=== AVC/USER_AVC denials this boot ==="
+      # Four independent sources, from most to least likely to have
+      # caught an AVC that fired before auditd (and thus the persistent
+      # audit log) was up: the kernel ring buffer directly (dmesg),
+      # journald's own capture of that same ring buffer (journalctl -k,
+      # which can have different retention/rotation behavior than a
+      # raw dmesg call), journald's full (non-kernel-only) log in case
+      # audit went through the userspace dispatcher instead, and
+      # finally ausearch's view of the persistent audit log. Grepping
+      # all four for both "avc:" and "denied" case-insensitively so
+      # nothing is missed by relying on exact message formatting.
+      echo "=== dmesg | grep -i 'avc:\\|denied' ==="
+      dmesg 2>&1 | grep -i 'avc:\|denied' || echo "no matches in dmesg"
+
+      echo "=== journalctl -k -b | grep -i 'avc:\\|denied' ==="
+      journalctl -k -b 2>&1 | grep -i 'avc:\|denied' || echo "no matches in journalctl -k -b"
+
+      echo "=== journalctl -b | grep -i 'avc:\\|denied' ==="
+      journalctl -b 2>&1 | grep -i 'avc:\|denied' || echo "no matches in journalctl -b"
+
+      echo "=== journalctl -b -1 -k | grep -i 'avc:\\|denied' (previous boot, if available) ==="
+      journalctl -b -1 -k 2>&1 | grep -i 'avc:\|denied' || echo "no matches (or no previous boot available) in journalctl -b -1 -k"
+
+      echo "=== AVC/USER_AVC denials this boot (ausearch) ==="
       ausearch -m AVC,USER_AVC -ts boot 2>&1 || echo "no AVCs this boot"
 
 execute:
