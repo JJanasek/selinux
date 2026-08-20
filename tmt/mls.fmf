@@ -24,8 +24,15 @@ description: |
       privilege-separated sshd-session hands a login shell as stdin/
       stdout, so command output never makes it back over SSH once mls is
       actually enforcing.
+    - udevptrace (mls-udev-ptrace-fix/): grants udev_t the one
+      self:capability sys_ptrace access missing from upstream udev.te's
+      otherwise-fairly-complete self:capability allow list. Real but
+      narrow and, per this plan's own investigation (see the enforcing-
+      switch step below), unrelated to acceptance criterion 1's actual
+      boot-reliability issue -- fixed on its own merits since dontaudit
+      off surfaces it.
 
-    Both are checked into this plan as standalone third-party module
+    All three are checked into this plan as standalone third-party module
     sources, built with the standard `/usr/share/selinux/devel/Makefile`
     workflow and loaded into the guest's mls store with `semodule -i`, so
     there's no runtime dependency on GitHub or a custom selinux-policy
@@ -86,16 +93,17 @@ prepare:
       cp $TMT_TREE/tmt/mls-cloudinit-fix/cloudform.if .
       cp $TMT_TREE/tmt/mls-cloudinit-fix/cloudform.fc .
       cp $TMT_TREE/tmt/mls-ssh-pipes-fix/mlssshpipes.te .
+      cp $TMT_TREE/tmt/mls-udev-ptrace-fix/udevptrace.te .
 
-      make -f /usr/share/selinux/devel/Makefile cloudform.pp mlssshpipes.pp
+      make -f /usr/share/selinux/devel/Makefile cloudform.pp mlssshpipes.pp udevptrace.pp
 
       # -n: build these into the (currently inactive) mls store without
       # hot-reloading the live kernel, which is still running -- and
       # still enforcing -- the old targeted policy at this point. The
       # mls store only becomes the active kernel policy on the reboot in
       # the next step.
-      semodule -n -i cloudform.pp mlssshpipes.pp
-      semodule -l | grep -E '^(cloudform|mlssshpipes)\b'
+      semodule -n -i cloudform.pp mlssshpipes.pp udevptrace.pp
+      semodule -l | grep -E '^(cloudform|mlssshpipes|udevptrace)\b'
 
   - name: Reboot to apply MLS and relabel
     how: shell
@@ -176,19 +184,24 @@ prepare:
           # same infra with marks on (516a17dc-46d9-492c-bee9-697b8806f305),
           # whose console log shows the same devices ready within ~10s.
           #
-          # Conclusion: there is no missing allow rule to write here --
-          # nothing is being denied. But marking these two domains
-          # permissive is empirically, reproducibly (4/4 vs passing)
-          # necessary for udev to finish enumerating this guest's disk
-          # in time on this infra, for reasons that don't show up as
-          # denials -- most plausibly the raw per-syscall cost of mls
-          # permission computation (much larger category range than
-          # targeted) in these two domains' device/network setup code
-          # paths, tipping already-marginal udev timing over the 90s
-          # edge. Restoring both marks; a TE change cannot fix a timing
-          # effect with no corresponding denial.
-          semanage permissive -n -a udev_t
-          semanage permissive -n -a NetworkManager_t
+          # EXPERIMENT (round 3): the expanded logging in round 2 turned
+          # up one real, narrow udev_t gap on a *passing* run: "avc:
+          # denied { sys_ptrace } ... comm=udevadm ...
+          # scontext=...udev_t... tcontext=...udev_t...
+          # tclass=capability permissive=1" -- upstream udev.te allows
+          # udev_t a long list of self:capability access but not
+          # sys_ptrace. Fixed properly via mls-udev-ptrace-fix/ (loaded
+          # alongside the other two local modules above), since it's a
+          # real gap regardless of the outcome here.
+          #
+          # It's sporadic though (seen in only one of six boots
+          # inspected across rounds 1-2) and anti-correlated with the
+          # actual udev-timeout hang -- present in a boot that passed,
+          # absent from all four that hit the failure -- so it's not
+          # expected to be the cause. Testing that directly: marks still
+          # dropped here, now with the sys_ptrace gap actually fixed
+          # instead of masked, to see whether that alone (no permissive
+          # marking) makes udev enumeration reliable.
           semanage dontaudit off -N
 
           # Raise the audit backlog so early-boot AVCs survive to be read

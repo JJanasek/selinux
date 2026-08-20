@@ -1,0 +1,9 @@
+policy_module(udevptrace, 1.0.0)
+
+# udev.te's self:capability allow list doesn't include sys_ptrace.
+
+gen_require(`
+	type udev_t;
+')
+
+allow udev_t self:capability sys_ptrace;
