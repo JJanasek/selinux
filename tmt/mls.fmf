@@ -252,24 +252,38 @@ prepare:
           # copy from disk regardless. Check 2/4 captures that rebuilt
           # binary's dontaudit count *before* any extra rebuild of our
           # own, to see whether "off -N" alone was actually sufficient.
-          # Then force an explicit, unambiguous `semodule -B` (the same
-          # primitive `semanage dontaudit off` itself uses, called
-          # directly against this exact store) as a belt-and-suspenders
-          # guarantee that whatever gets loaded on reboot is truly
-          # built with the current (off) setting, and check 3/4
-          # confirms that rebuild specifically. If check 2/4 and 3/4
-          # agree (both zero), "off -N" alone was already sufficient and
-          # this call is a redundant no-op; if check 2/4 is nonzero and
-          # 3/4 is zero, "off -N" alone was NOT sufficient in this
-          # staged-build flow and this explicit rebuild is the real fix.
+          #
+          # IMPORTANT, found by actually running this (request
+          # e38808dd-0659-4caa-8048-c228c7cca14b): a plain `semodule -B`
+          # here is the WRONG belt-and-suspenders call and actively
+          # undoes the fix. `-B` alone rebuilds from the modules with
+          # dontaudit back at its compiled-in default (on) -- it does
+          # NOT persist/consult the "off" preference `semanage
+          # dontaudit off` set. That run measured 0/0 right after "off
+          # -N" (check 2/4 below) but 140/157 again right after an
+          # unqualified `semodule -B` (a mistake this plan's own history
+          # made and is documenting so it doesn't get repeated), and
+          # crucially the *post-reboot active kernel policy* (diag 4/4
+          # in the verify step) matched that reintroduced 140/157, i.e.
+          # the boot genuinely ran with dontaudit back on. The correct
+          # explicit rebuild primitive is `semodule -D` (--
+          # disable_dontaudit, a distinct MODE from plain -B per
+          # `semodule --help`) combined with `-B`: `semodule -DB`
+          # rebuilds *and* strips dontaudit in the same step, unlike
+          # `-B` by itself. Check 3/4 confirms that specifically. If
+          # check 2/4 and 3/4 agree (both zero), "off -N" alone was
+          # already sufficient and this call is a redundant-but-safe
+          # no-op; either way this is now the guaranteed-correct guard
+          # against a future added step between here and the reboot
+          # silently re-including dontaudit the way plain `-B` did.
           mls_policy=$(ls -t /etc/selinux/mls/policy/policy.* | head -1)
           echo "=== [dontaudit diag 2/4] on-disk mls store binary right after 'semanage dontaudit off -N', before any extra rebuild: $mls_policy ==="
           echo "udev_t dontaudit rule count: $(sesearch --dontaudit -s udev_t "$mls_policy" 2>/dev/null | wc -l)"
           echo "NetworkManager_t dontaudit rule count: $(sesearch --dontaudit -s NetworkManager_t "$mls_policy" 2>/dev/null | wc -l)"
 
-          semodule -B
+          semodule -DB
           mls_policy=$(ls -t /etc/selinux/mls/policy/policy.* | head -1)
-          echo "=== [dontaudit diag 3/4] on-disk mls store binary after explicit 'semodule -B': $mls_policy ==="
+          echo "=== [dontaudit diag 3/4] on-disk mls store binary after explicit 'semodule -DB': $mls_policy ==="
           echo "udev_t dontaudit rule count: $(sesearch --dontaudit -s udev_t "$mls_policy" 2>/dev/null | wc -l)"
           echo "NetworkManager_t dontaudit rule count: $(sesearch --dontaudit -s NetworkManager_t "$mls_policy" 2>/dev/null | wc -l)"
 
