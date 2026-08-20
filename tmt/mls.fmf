@@ -272,8 +272,91 @@ prepare:
           # distinct rebuild MODE per `semodule --help`, not a modifier
           # of `-B` -- which the second attempt confirmed reliably
           # keeps both checks at 0/0.)
-          semanage permissive -n -a udev_t
-          semanage permissive -n -a NetworkManager_t
+          # Round 5 EXPERIMENT (re-examining the round-4 conclusion from a
+          # different angle): a zero-denial finding only shows nothing was
+          # *blocked* -- it says nothing about whether the mlsconstrain
+          # dominance math is being computed (and costing cycles) on every
+          # *allowed* access too. Live-policy verification (see the new
+          # diagnostics at the end of the Verify step, and the round-5 plan
+          # commit message) confirmed: udev_t/NetworkManager_t both run at
+          # the full s0-s15:c0.c1023 range; udev_t already holds
+          # mlsfileread/mlsfilewrite/mlsfileupgrade/mlsfiledowngrade
+          # (verified live via `seinfo -x -t`, matching upstream udev.te's
+          # mls_file_read_all_levels()/mls_file_write_all_levels()/
+          # mls_file_upgrade()/mls_file_downgrade() calls -- extending the
+          # prior note, which only checked read); and the live
+          # mlsconstrain expressions for chr_file/blk_file/dir (`seinfo
+          # --constrain`) match upstream refpolicy's policy/mls verbatim.
+          #
+          # Reading the actual kernel constraint evaluator
+          # (security/selinux/ss/services.c:constraint_expr_eval) shows it
+          # is a postfix stack machine with no short-circuit evaluation --
+          # every operand of every AND/OR is unconditionally evaluated,
+          # including the `mls_level_dom()` dominance check, regardless of
+          # whether a `mlsfileread`-style trust attribute would make an
+          # "or" branch trivially true. So approach 1 (adding a missing
+          # trust attribute to short-circuit the constraint) cannot reduce
+          # per-syscall cost even in principle -- it only changes the
+          # allow/deny outcome -- and there's no missing attribute to add
+          # here besides (udev_t already has the full set). Not pursuing
+          # it further.
+          #
+          # `mls_level_dom()` itself (security/selinux/ss/mls_types.h) is
+          # also just a sensitivity-integer compare plus one
+          # `ebitmap_contains()` call; for udev_t's single contiguous
+          # 0-1023 category node this is a handful of word comparisons
+          # either way, independent of whether the range is s0 alone or
+          # the full s0-s15:c0.c1023 -- so approach 2's "smaller range,
+          # therefore cheaper per-op dominance math" framing doesn't hold
+          # up either, on pure kernel-source grounds. (Testing it
+          # empirically anyway below, since a range restriction could
+          # still affect other costs -- e.g. context string handling --
+          # not captured by that analysis.)
+          #
+          # This experiment tests the *cheapest* candidate first, per the
+          # investigation's own priority: AVC cache pressure. Fedora's
+          # AVC hash table defaults to 512 slots/threshold
+          # (AVC_DEF_CACHE_THRESHOLD in security/selinux/avc.c); mls's
+          # much larger SID space (every distinct range is a distinct
+          # SID) could plausibly thrash a cache sized for targeted/mcs's
+          # smaller SID space, forcing repeated slow-path avtab/sidtab
+          # lookups during udev's early device-enumeration burst. (Live
+          # cache_stats sampled *after* a successful marks-on boot showed
+          # a >99% hit rate and reclaim counts tracking allocations
+          # closely -- i.e. no thrashing evident post-boot -- but that
+          # doesn't rule out a transient spike during the specific ~90s
+          # early window this investigation cares about, so testing this
+          # directly rather than inferring from a post-hoc sample.)
+          #
+          # Raising it via a dedicated early unit ordered before
+          # systemd-udevd.service, run in whatever domain init_t (PID 1)
+          # executes untransitioned custom units in -- verified by the
+          # cache_threshold value the Verify step already prints.
+          mkdir -p /etc/systemd/system
+          cat > /etc/systemd/system/mls-avc-cache-threshold.service <<'UNITEOF'
+      [Unit]
+      Description=EXPERIMENT - raise SELinux AVC cache threshold before udev starts
+      DefaultDependencies=no
+      Before=sysinit.target systemd-udevd.service
+      ConditionPathExists=/sys/fs/selinux/avc/cache_threshold
+
+      [Service]
+      Type=oneshot
+      ExecStart=/bin/sh -c 'echo 16384 > /sys/fs/selinux/avc/cache_threshold'
+      RemainAfterExit=yes
+
+      [Install]
+      WantedBy=sysinit.target
+      UNITEOF
+          systemctl enable mls-avc-cache-threshold.service
+
+          # EXPERIMENT: marks intentionally left OFF here to test whether
+          # the cache_threshold bump above (cheap, no rebuild needed) can
+          # replace them. If this fails identically to the five prior
+          # marks-dropped attempts, that's further evidence against AVC
+          # cache pressure as the driver and this block gets restored.
+          # semanage permissive -n -a udev_t
+          # semanage permissive -n -a NetworkManager_t
           semanage dontaudit off -N
 
           # Verification + guard (see round-4 note above for the full
