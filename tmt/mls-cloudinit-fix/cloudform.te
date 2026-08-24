@@ -69,7 +69,7 @@ miscfiles_read_certs(cloudform_domain)
 # cloud-init local policy
 #
 
-allow cloud_init_t self:capability { fowner chown fsetid dac_read_search dac_override kill setgid sys_admin };
+allow cloud_init_t self:capability { fowner chown fsetid dac_read_search dac_override kill net_admin setgid sys_admin };
 allow cloud_init_t self:passwd { passwd rootok };
 
 allow cloud_init_t self:udp_socket create_socket_perms;
@@ -117,6 +117,20 @@ miscfiles_manage_localization(cloud_init_t)
 
 selinux_validate_context(cloud_init_t)
 
+optional_policy(`
+    # cloud-init (and udevadm, run under cloud_init_t via the udev block
+    # below) reads /etc/selinux/config directly to detect the running
+    # SELinux mode -- AVC: denied { read } for comm="cloud-init"/"udevadm"
+    # name="config" ... tcontext=selinux_config_t. Only "read" was ever
+    # denied (not getattr/open), so grant exactly that instead of the
+    # broader seutil_read_config() interface.
+    gen_require(`
+        type selinux_config_t;
+    ')
+
+    allow cloud_init_t selinux_config_t:file read;
+')
+
 systemd_dbus_chat_hostnamed(cloud_init_t)
 systemd_dbus_chat_logind(cloud_init_t)
 systemd_dbus_chat_timedated(cloud_init_t)
@@ -124,6 +138,13 @@ systemd_exec_systemctl(cloud_init_t)
 systemd_start_all_services(cloud_init_t)
 
 usermanage_domtrans_passwd(cloud_init_t)
+# domtrans_pattern (misc_patterns.spt) does not grant these -- AVC: denied
+# { noatsecure }/{ rlimitinh }/{ siginh } for comm="cloud-init"/"passwd"
+# scontext=cloud_init_t tcontext=passwd_t
+gen_require(`
+    type passwd_t;
+')
+allow cloud_init_t passwd_t:process { noatsecure rlimitinh siginh };
 
 optional_policy(`
     certmonger_dbus_chat(cloud_init_t)
@@ -153,6 +174,19 @@ optional_policy(`
 
 optional_policy(`
     fstools_domtrans(cloud_init_t)
+
+    # domtrans_pattern does not grant these -- AVC: denied
+    # { noatsecure }/{ rlimitinh }/{ siginh } for comm="growpart"/"sfdisk"/
+    # "partx"/"blkid" scontext=cloud_init_t tcontext=fsadm_t
+    gen_require(`
+        type fsadm_t;
+    ')
+    allow cloud_init_t fsadm_t:process { noatsecure rlimitinh siginh };
+
+    # growpart (fsadm_t) writes its own scratch/error files into the
+    # cloud-init tmp dir -- AVC: denied { write } for comm="sfdisk" path=
+    # ".../growpart/.../tmp.out" scontext=fsadm_t tcontext=cloud_init_tmp_t
+    allow fsadm_t cloud_init_tmp_t:file write;
 ')
 
 optional_policy(`
@@ -180,6 +214,17 @@ optional_policy(`
     ssh_read_server_keys(cloud_init_t)
     ssh_manage_home_files(cloud_init_t)
     manage_dirs_pattern(cloud_init_t, ssh_home_t, ssh_home_t)
+
+    # domtrans_pattern does not grant these -- AVC: denied
+    # { noatsecure }/{ rlimitinh }/{ siginh } for comm="write-ssh-key-f"/
+    # "ssh-keygen" scontext=cloud_init_t tcontext=ssh_keygen_t (cloud-init
+    # still runs its ssh_genkeytypes module even with ssh_deletekeys: false,
+    # since that setting only skips deleting existing keys, not generating
+    # missing ones)
+    gen_require(`
+        type ssh_keygen_t;
+    ')
+    allow cloud_init_t ssh_keygen_t:process { noatsecure rlimitinh siginh };
 ')
 
 optional_policy(`
@@ -193,6 +238,16 @@ optional_policy(`
     sysnet_manage_config_sockets(cloud_init_t)
     sysnet_read_dhcpc_pid(cloud_init_t)
     sysnet_kill_dhcpc(cloud_init_t)
+
+    # domtrans_pattern does not grant these -- AVC: denied
+    # { noatsecure }/{ rlimitinh }/{ siginh } for comm="cloud-init"/"dhcpcd"
+    # scontext=cloud_init_t tcontext=dhcpc_t, and for comm="cloud-init"/"ip"
+    # scontext=cloud_init_t tcontext=ifconfig_t
+    gen_require(`
+        type dhcpc_t, ifconfig_t;
+    ')
+    allow cloud_init_t dhcpc_t:process { noatsecure rlimitinh siginh };
+    allow cloud_init_t ifconfig_t:process { noatsecure rlimitinh siginh };
 ')
 
 optional_policy(`
@@ -210,14 +265,8 @@ optional_policy(`
 ')
 
 optional_policy(`
-    # The cloud-init single-process architecture (cloud-init-main.service)
-    # hands off to per-stage shims (cloud-init-local, cloud-init-network,
-    # cloud-config, cloud-final) over unix sockets under
-    # /run/cloud-init/share. That path has no cloudform-owned type, so it
-    # inherits net_conf_t (sysnetwork) via the generic /run fallback -- and
-    # the shims run as initrc_t (no domain transition is defined for a
-    # plain "sh -c nc ..." ExecStart), so both sides of this handshake need
-    # an explicit cross-module grant or every stage silently never starts.
+    # cloud-init stage shims run as initrc_t and connect to cloud_init_t
+    # sync sockets under /run/cloud-init/share (net_conf_t)
     gen_require(`
         type initrc_t, net_conf_t;
     ')
@@ -226,12 +275,8 @@ optional_policy(`
 ')
 
 optional_policy(`
-    # cloud-init-generator (running as cloud_init_t) enables cloud-init.target
-    # for the boot by writing its own runtime pull-in symlink under
-    # /run/systemd/generator.early/multi-user.target.wants/. Without this,
-    # that mkdir+ln is silently denied, which is what actually produces
-    # "failed to make dir ... enable failed: ln ..." in the generator log --
-    # it looks like a generator bug but is really a missing policy grant.
+    # cloud-init-generator writes its own enablement symlink under
+    # /run/systemd/generator.early/
     gen_require(`
         type systemd_generator_unit_file_t;
     ')
