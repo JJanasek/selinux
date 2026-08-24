@@ -161,11 +161,11 @@ prepare:
       sestatus
 
       echo "=== dmesg | grep -i 'avc:\|denied' ==="
-      dmesg_dump=$(dmesg 2>&1)
+      dmesg_dump=$(dmesg 2>&1) || true
       echo "$dmesg_dump" | grep -i 'avc:\|denied' || echo "no matches in dmesg"
 
       echo "=== journalctl -k -b | grep -i 'avc:\|denied' ==="
-      journalctl_k_dump=$(journalctl -k -b 2>&1)
+      journalctl_k_dump=$(journalctl -k -b 2>&1) || true
       echo "$journalctl_k_dump" | grep -i 'avc:\|denied' || echo "no matches in journalctl"
 
       echo "=== AVC/USER_AVC denials this boot (ausearch) ==="
@@ -173,7 +173,7 @@ prepare:
       # real AVCs that computing the actual boot time caught (see the
       # cloud-init socket-permission investigation in the execute step).
       boot_ts=$(date -d "$(uptime -s)" '+%m/%d/%Y %H:%M:%S' 2>/dev/null || echo recent)
-      avc_dump=$(ausearch -m AVC,USER_AVC -ts "$boot_ts" 2>&1)
+      avc_dump=$(ausearch -m AVC,USER_AVC -ts "$boot_ts" 2>&1) || true
       echo "$avc_dump"
 
       echo "=== any AVCs naming udev_t or NetworkManager_t specifically ==="
