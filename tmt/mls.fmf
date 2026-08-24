@@ -108,10 +108,7 @@ prepare:
           # domain straight from its own /proc, since that's ground truth
           # regardless of whether the audit trail is somehow missing it.
           mkdir -p /etc/systemd/system/cloud-init-local.service.d
-          cat > /etc/systemd/system/cloud-init-local.service.d/99-diag-context.conf <<'UNITEOF'
-          [Service]
-          ExecStartPre=/bin/sh -c 'echo "shim context: $(cat /proc/self/attr/current 2>&1) uid=$(id -u)" >> /run/cloud-init/shim-context.log'
-          UNITEOF
+          printf '%s\n' '[Service]' 'ExecStartPre=/bin/sh -c '"'"'echo "shim context: $(cat /proc/self/attr/current 2>&1) uid=$(id -u)" >> /run/cloud-init/shim-context.log'"'"'' > /etc/systemd/system/cloud-init-local.service.d/99-diag-context.conf
 
           # Use -DB to guarantee a policy rebuild without silently restoring dontaudit rules
           semodule -DB
@@ -181,8 +178,8 @@ execute:
     # /run/cloud-init/share (created 0700 by cloud-init-main) and its sockets
     # actually owned by the same user these shims run as?
     echo "=== /run/cloud-init/share ownership, perms, and SELinux labels ==="
-    ls -laZ /run/cloud-init 2>&1
-    ls -laZ /run/cloud-init/share 2>&1
+    ls -laZ /run/cloud-init 2>&1 || true
+    ls -laZ /run/cloud-init/share 2>&1 || true
     echo "=== configured User/sandboxing for cloud-init units (root by default?) ==="
     systemctl show cloud-init-main.service cloud-init-local.service cloud-config.service cloud-final.service -p User -p Group -p DynamicUser -p NoNewPrivileges -p CapabilityBoundingSet -p ProtectSystem -p PrivateTmp -p RootDirectory -p RootImage || true
 
@@ -197,9 +194,10 @@ execute:
     # not a synthetic reproduction.
     echo "=== live test: does permissive mode change the outcome for the still-pending local-stage handshake? ==="
     setenforce 0
-    timeout 15 sh -c 'echo "start" | nc -U /run/cloud-init/share/local.sock | sh' 2>&1
-    echo "permissive retry rc=$?"
-    setenforce 1
+    retry_rc=0
+    timeout 15 sh -c 'echo "start" | nc -U /run/cloud-init/share/local.sock | sh' 2>&1 || retry_rc=$?
+    echo "permissive retry rc=$retry_rc"
+    setenforce 1 || true
     echo "=== any AVC now, even from that permissive-mode retry, naming cloud-init/net_conf_t/nc? ==="
     ausearch -m AVC -ts recent 2>/dev/null | grep -iE 'net_conf|cloud_init|comm="nc"|comm="sh"' || echo "still nothing"
 
