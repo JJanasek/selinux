@@ -77,38 +77,24 @@ prepare:
           semanage permissive -n -a NetworkManager_t
           semanage dontaudit off -N
 
-          # WORKAROUND: cloud-init-generator's own runtime enablement step
-          # (writing a symlink into /run/systemd/generator.early/multi-user
-          # .target.wants/) reliably fails on this image -- confirmed via
-          # /run/cloud-init/cloud-init-generator.log: ds-identify correctly
-          # finds the Ec2 datasource and decides to enable, but then
-          # "failed to make dir ... [1] enable failed: ln ...". No AVC
-          # anywhere names this (ausearch/dmesg/journalctl -k -b all clean),
-          # so it isn't a policy gap -- it's the generator's own mkdir/ln
-          # step failing outright. cloud-init.target ships with no static
-          # [Install] section (by design, it's meant to be enabled purely
-          # by the generator), so that failure leaves nothing wanting it,
-          # and cloud-init-local/cloud-init-main/cloud-config/cloud-final
-          # (all of which hang off cloud-init.target's Wants=) never even
-          # get considered -- zero matching journal entries for any of
-          # them, not even a "condition failed" line. Enabling it the same
-          # way `systemctl enable` would for any unit that does ship an
-          # [Install] section, so boot no longer depends on the
-          # generator's runtime step succeeding.
+          # WORKAROUND (kept as defense-in-depth alongside the real fix in
+          # cloudform.te): cloud-init-generator's own runtime enablement
+          # step (writing a symlink into /run/systemd/generator.early/
+          # multi-user.target.wants/) reliably failed on this image --
+          # /run/cloud-init/cloud-init-generator.log showed "failed to make
+          # dir ... [1] enable failed: ln ...". This first looked like a
+          # non-SELinux bug (ausearch -ts boot came back clean), but that
+          # was a false negative in our own diagnostics: -ts boot silently
+          # missed real, already-occurring AVCs that -ts recent later
+          # caught (see the socket-permission investigation below in the
+          # execute step) -- cloudform.te now grants cloud_init_t the
+          # missing manage rights on systemd_generator_unit_file_t so the
+          # generator's own symlink succeeds. This static symlink stays as
+          # a low-cost second path to the same end state, since
+          # cloud-init.target ships with no static [Install] section by
+          # design (meant to be enabled purely by the generator).
           mkdir -p /etc/systemd/system/multi-user.target.wants
           ln -sf /usr/lib/systemd/system/cloud-init.target /etc/systemd/system/multi-user.target.wants/cloud-init.target
-
-          # DIAGNOSTIC: with cloud-init.target now activating, every stage
-          # shim fails "nc: ...sock: Permission denied" against
-          # cloud-init-main's sync sockets (/run/cloud-init/share, which
-          # restorecon labels net_conf_t -- no cloudform-owned type exists
-          # for it), yet two boots straight of dontaudit-disabled ausearch
-          # show zero AVCs naming cloud-init/net_conf_t/nc anywhere. Before
-          # trusting that absence, capture the shim's *actual* SELinux
-          # domain straight from its own /proc, since that's ground truth
-          # regardless of whether the audit trail is somehow missing it.
-          mkdir -p /etc/systemd/system/cloud-init-local.service.d
-          printf '%s\n' '[Service]' 'ExecStartPre=/bin/sh -c '"'"'echo "shim context: $(cat /proc/self/attr/current 2>&1) uid=$(id -u)" >> /run/cloud-init/shim-context.log'"'"'' > /etc/systemd/system/cloud-init-local.service.d/99-diag-context.conf
 
           # Use -DB to guarantee a policy rebuild without silently restoring dontaudit rules
           semodule -DB
@@ -134,7 +120,11 @@ prepare:
       journalctl -k -b 2>&1 | grep -i 'avc:\|denied' || echo "no matches in journalctl"
 
       echo "=== AVC/USER_AVC denials this boot (ausearch) ==="
-      ausearch -m AVC,USER_AVC -ts boot 2>&1 || echo "no AVCs this boot"
+      # NOTE: "-ts boot" has proven unreliable here -- it silently missed
+      # real, already-occurring AVCs that "-ts recent" caught (see the
+      # cloud-init socket-permission investigation in the execute step),
+      # likely due to clock/timezone not being settled this early in boot.
+      ausearch -m AVC,USER_AVC -ts recent 2>&1 || echo "no AVCs this boot"
 
 execute:
   how: tmt
@@ -154,11 +144,10 @@ execute:
 
     # DIAGNOSTIC: cloud-init's boot activation is generator-only --
     # cloud-init.target ships with no static [Install] section, so it
-    # relies entirely on cloud-init-generator writing a runtime symlink at
-    # boot (see the enforcing-switch step's workaround above for the full
-    # story on why that was failing here). Keeping these permanently:
-    # "did cloud-init actually finish" needs a real check every run, not
-    # just a passing diagnostic script.
+    # relies on cloud-init-generator (or the static symlink workaround
+    # above) pulling it into the boot transaction. Keeping these
+    # permanently: "did cloud-init actually finish" needs a real check
+    # every run, not just a passing diagnostic script.
     echo "=== cloud-init unit enablement/status ==="
     systemctl list-unit-files 'cloud-init*' 'cloud-config*' 'cloud-final*' || true
     systemctl status --no-pager cloud-init-local.service cloud-init-main.service cloud-config.service cloud-final.service || true
@@ -170,36 +159,14 @@ execute:
     echo "=== cloud-init-generator's own log (ds-identify trace, written pre-journald) ==="
     cat /run/cloud-init/cloud-init-generator.log 2>&1 || echo "no cloud-init-generator.log"
 
-    # DIAGNOSTIC: stage shims (cloud-init-local/cloud-config/cloud-final) fail
-    # with "nc: ...sock: Permission denied" connecting to cloud-init-main's
-    # sync sockets, but the audit2allow section below has shown zero AVCs
-    # naming cloud-init/nc/cloud_init_t in two runs straight -- so before
-    # assuming a hidden SELinux gap, check the boring DAC explanation: is
-    # /run/cloud-init/share (created 0700 by cloud-init-main) and its sockets
-    # actually owned by the same user these shims run as?
-    echo "=== /run/cloud-init/share ownership, perms, and SELinux labels ==="
-    ls -laZ /run/cloud-init 2>&1 || true
+    # DIAGNOSTIC: cloud-init-main.service listens on unix sockets under
+    # /run/cloud-init/share (labeled net_conf_t, no cloudform-owned type
+    # exists for it) for its stage shims (running as initrc_t) to signal
+    # "start". cloudform.te now grants that connectto/write cross-domain,
+    # but keep this cheap ls around -- it is exactly what exposed the gap
+    # last time and costs nothing to check on every run.
+    echo "=== /run/cloud-init/share ownership and SELinux labels ==="
     ls -laZ /run/cloud-init/share 2>&1 || true
-    echo "=== configured User/sandboxing for cloud-init units (root by default?) ==="
-    systemctl show cloud-init-main.service cloud-init-local.service cloud-config.service cloud-final.service -p User -p Group -p DynamicUser -p NoNewPrivileges -p CapabilityBoundingSet -p ProtectSystem -p PrivateTmp -p RootDirectory -p RootImage || true
-
-    echo "=== actual SELinux domain of the cloud-init-local shim (captured via drop-in ExecStartPre) ==="
-    cat /run/cloud-init/shim-context.log 2>&1 || echo "no shim-context.log"
-
-    # DIAGNOSTIC: definitive test -- if flipping to permissive lets the very
-    # same handshake that just failed during boot succeed, that proves
-    # SELinux (not DAC/protocol) is the blocker, dontaudit-hidden AVC or not.
-    # cloud-init-main is still parked waiting for local stage's "start" (it
-    # never arrived), so this is a real, harmless retry of that one message,
-    # not a synthetic reproduction.
-    echo "=== live test: does permissive mode change the outcome for the still-pending local-stage handshake? ==="
-    setenforce 0
-    retry_rc=0
-    timeout 15 sh -c 'echo "start" | nc -U /run/cloud-init/share/local.sock | sh' 2>&1 || retry_rc=$?
-    echo "permissive retry rc=$retry_rc"
-    setenforce 1 || true
-    echo "=== any AVC now, even from that permissive-mode retry, naming cloud-init/net_conf_t/nc? ==="
-    ausearch -m AVC -ts recent 2>/dev/null | grep -iE 'net_conf|cloud_init|comm="nc"|comm="sh"' || echo "still nothing"
 
     echo "=== failed units / stuck jobs this boot ==="
     systemctl --failed --no-pager || true
@@ -209,7 +176,10 @@ execute:
     journalctl -u 'cloud-init*' -u 'cloud-config*' -u 'cloud-final*' -b --no-pager || true
 
     echo "=== audit2allow suggestions for any denials above ==="
-    ausearch -m AVC -ts boot 2>/dev/null | audit2allow || true
+    # NOTE: "-ts boot" silently missed real AVCs earlier in this same
+    # investigation (see "-ts recent" a few lines up, which caught them) --
+    # using "-ts recent" here too so this diagnostic is actually trustworthy.
+    ausearch -m AVC -ts recent 2>/dev/null | audit2allow || true
 
     # REAL VERIFICATION: unlike everything above, this is not `|| true`.
     # Whether cloud-init actually finished under cloud_init_t is the

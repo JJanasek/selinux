@@ -210,6 +210,37 @@ optional_policy(`
 ')
 
 optional_policy(`
+    # The cloud-init single-process architecture (cloud-init-main.service)
+    # hands off to per-stage shims (cloud-init-local, cloud-init-network,
+    # cloud-config, cloud-final) over unix sockets under
+    # /run/cloud-init/share. That path has no cloudform-owned type, so it
+    # inherits net_conf_t (sysnetwork) via the generic /run fallback -- and
+    # the shims run as initrc_t (no domain transition is defined for a
+    # plain "sh -c nc ..." ExecStart), so both sides of this handshake need
+    # an explicit cross-module grant or every stage silently never starts.
+    gen_require(`
+        type initrc_t, net_conf_t;
+    ')
+
+    stream_connect_pattern(initrc_t, net_conf_t, net_conf_t, cloud_init_t)
+')
+
+optional_policy(`
+    # cloud-init-generator (running as cloud_init_t) enables cloud-init.target
+    # for the boot by writing its own runtime pull-in symlink under
+    # /run/systemd/generator.early/multi-user.target.wants/. Without this,
+    # that mkdir+ln is silently denied, which is what actually produces
+    # "failed to make dir ... enable failed: ln ..." in the generator log --
+    # it looks like a generator bug but is really a missing policy grant.
+    gen_require(`
+        type systemd_generator_unit_file_t;
+    ')
+
+    manage_dirs_pattern(cloud_init_t, systemd_generator_unit_file_t, systemd_generator_unit_file_t)
+    manage_lnk_files_pattern(cloud_init_t, systemd_generator_unit_file_t, systemd_generator_unit_file_t)
+')
+
+optional_policy(`
     unconfined_domain(cloud_init_t)
 ')
 
