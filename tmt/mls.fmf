@@ -4,9 +4,12 @@ description: |
     SELinux policy to mls and boot to a working SSH session in enforcing mode,
     with cloud-init and networking functional.
 
-    Applies necessary workarounds for an unresolved udev/NetworkManager
-    MLS timing race (permissive marks + fstab tuning) and loads custom
-    policy modules to patch missing upstream MLS rules.
+    EXPERIMENT (round 6): testing whether raising systemd-udevd's own
+    per-worker event_timeout (plus the systemd-udevd/NetworkManager
+    service timeouts) fixes the udev/NetworkManager MLS timing race
+    without the udev_t/NetworkManager_t permissive marks + fstab tuning
+    used in rounds 1-5. Also loads custom policy modules to patch
+    missing upstream MLS rules.
 
 prepare:
   - name: Install and configure MLS policy in Permissive mode
@@ -62,19 +65,47 @@ prepare:
           rm -f /.autorelabel
           systemctl mask selinux-autorelabel.service
 
-          # WORKAROUND: Mitigate udev MLS overhead timing race.
-          # Resolve fstab UUIDs to raw devices and extend timeouts to prevent local-fs.target collapse.
-          cp /etc/fstab /etc/fstab.orig
-          awk '!/^#/ && NF >= 4 && $3 != "swap" && $1 ~ /^UUID=/ { sub(/^UUID=/, "", $1); print $1 }' /etc/fstab.orig | sort -u | while read -r uuid; do
-              dev=$(blkid -U "$uuid" 2>/dev/null) && [ -n "$dev" ] && sed -i "s#UUID=$uuid#$dev#g" /etc/fstab
-          done
-          cp /etc/fstab /etc/fstab.rewritten
-          awk '!/^#/ && NF >= 4 && $3 != "swap" { $4 = $4",nofail,x-systemd.device-timeout=90" } { print }' /etc/fstab.rewritten > /etc/fstab
+          # EXPERIMENT (round 6): rounds 1-5 confirmed (via ausearch, dmesg,
+          # journalctl -k -b, journalctl -b, journalctl -b -1 -k, and direct
+          # sesearch --dontaudit verification with dontaudit genuinely off)
+          # that dropping udev_t/NetworkManager_t permissive marks reliably
+          # reproduces a dev-nvme0n1p2/p3.device timeout -> local-fs.target
+          # failure with ZERO AVC denials anywhere, and that raising the
+          # *systemd unit*/mount timeout (x-systemd.device-timeout, the
+          # tmt-reboot ceiling) never fixes it -- the device job just retries
+          # in a loop until tmt gives up. That loop signature is exactly what
+          # you'd see if systemd-udevd's own internal per-worker event_timeout
+          # (separate from any unit-level timeout) is killing the worker
+          # before it finishes genuinely-slower work under MLS's heavier
+          # per-syscall dominance-math overhead -- userspace killing its own
+          # legitimate work, not SELinux denying anything.
+          #
+          # Verified against this exact image (Fedora 44, systemd-259.8, via
+          # `man udev.conf`): the compiled-in default event_timeout is 180s,
+          # not the ~60s commonly assumed from older docs. Raising it well
+          # past that baseline here.
+          echo 'event_timeout=300' >> /etc/udev/udev.conf
 
-          # WORKAROUND: Mark timing-sensitive domains permissive.
-          # Disabling dontaudit ensures we catch any hidden AVCs.
-          semanage permissive -n -a udev_t
-          semanage permissive -n -a NetworkManager_t
+          # TimeoutStartSec/TimeoutStopSec only gate systemd-udevd's own
+          # start/stop handshake, not per-worker event processing (that's
+          # event_timeout above) -- raised anyway as cheap insurance in case
+          # daemon start/stop itself is what's slow under MLS.
+          mkdir -p /etc/systemd/system/systemd-udevd.service.d
+          cp $TMT_TREE/tmt/mls-udev-timeout-fix/systemd-udevd-timeout.conf \
+              /etc/systemd/system/systemd-udevd.service.d/99-mls-timeout.conf
+
+          # NetworkManager.service already ships TimeoutStartSec=600
+          # upstream (verified via `systemctl cat NetworkManager.service` on
+          # this image) -- already above the naive 300s value, so raising it
+          # further to 900s instead of regressing it down to 300s.
+          mkdir -p /etc/systemd/system/NetworkManager.service.d
+          cp $TMT_TREE/tmt/mls-udev-timeout-fix/NetworkManager-timeout.conf \
+              /etc/systemd/system/NetworkManager.service.d/99-mls-timeout.conf
+
+          systemctl daemon-reload
+
+          # dontaudit off ensures we still catch any hidden AVCs if this
+          # theory turns out to be wrong.
           semanage dontaudit off -N
 
           # Use -DB to guarantee a policy rebuild without silently restoring dontaudit rules
@@ -103,6 +134,14 @@ prepare:
       echo "=== AVC/USER_AVC denials this boot (ausearch) ==="
       ausearch -m AVC,USER_AVC -ts boot 2>&1 || echo "no AVCs this boot"
 
+      echo "=== journalctl -k -b: udev worker timeout/kill evidence ==="
+      journalctl -k -b 2>&1 | grep -iE 'timeout|killing|worker.*fail|timeout expired' || echo "no udev worker timeout/kill messages this boot"
+
+      echo "=== current event_timeout / service timeout settings in effect ==="
+      grep -H event_timeout /etc/udev/udev.conf || echo "event_timeout not set in udev.conf"
+      systemctl show systemd-udevd.service -p TimeoutStartUSec -p TimeoutStopUSec
+      systemctl show NetworkManager.service -p TimeoutStartUSec -p TimeoutStopUSec
+
 execute:
   how: tmt
   script: |
@@ -117,6 +156,35 @@ execute:
 
     echo "=== cloud-init running domain (expected: cloud_init_t) ==="
     ps -eZ | grep -i cloud || true
+
+    # DIAGNOSTIC: cloud-init never leaves "not started" even after the wait
+    # above, with zero AVCs naming it anywhere -- so the next questions are
+    # whether systemd ever actually queued its units into the boot
+    # transaction at all (vs. them being enabled-but-never-pulled-in), and
+    # whether anything upstream in their dependency chain is stuck/failed.
+    echo "=== cloud-init unit enablement (static WantedBy symlinks) ==="
+    systemctl list-unit-files 'cloud-init*' 'cloud-config*' 'cloud-final*' || true
+
+    echo "=== cloud-init stage unit status (active/failed/masked?) ==="
+    systemctl status --no-pager --full cloud-init-local.service cloud-init.service cloud-config.service cloud-final.service || true
+
+    echo "=== full unit definitions incl. any generator drop-ins (Requires/Wants/After/Before) ==="
+    systemctl cat cloud-init-local.service cloud-init.service cloud-config.service cloud-final.service || true
+
+    echo "=== cloud-init.target dependency tree (is a dependency failed/inactive?) ==="
+    systemctl list-dependencies cloud-init.target --all || true
+
+    echo "=== any systemd jobs still stuck/waiting ==="
+    systemctl list-jobs || true
+
+    echo "=== all failed units this boot ==="
+    systemctl --failed --no-pager || true
+
+    echo "=== cloud-init-generator journal (ds-identify's enable/disable decision) ==="
+    journalctl -u cloud-init-generator -b --no-pager || true
+
+    echo "=== journal for all cloud-init/cloud-config/cloud-final units ==="
+    journalctl -u 'cloud-init*' -u 'cloud-config*' -u 'cloud-final*' -b --no-pager || true
 
     echo "=== audit2allow suggestions for any denials above ==="
     ausearch -m AVC -ts boot 2>/dev/null | audit2allow || true
