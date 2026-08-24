@@ -1,12 +1,20 @@
 summary: MLS Policy Enforcing-Mode Boot Validation
 description: |
-    Validates that a Fedora guest can be switched from the default targeted
-    SELinux policy to mls and boot to a working SSH session in enforcing mode,
-    with cloud-init and networking functional.
+    EXPERIMENT (round 8, temporary/diagnostic only): rounds 1-7 all searched
+    for udev/NetworkManager AVCs narrowly (scontext=udev_t or
+    scontext=NetworkManager_t only) with the corrected uptime -s boot
+    timestamp and found nothing. This round puts the WHOLE system in
+    SELINUX=permissive (not just the two domain-level marks) for one run and
+    sweeps broadly for anything udev/device-related -- by scontext, tcontext,
+    comm=, or object class -- before closing the book on "timing issue, not
+    policy issue". Also loads custom policy modules to patch missing
+    upstream MLS rules.
 
-    Applies necessary workarounds for an unresolved udev/NetworkManager
-    MLS timing race (permissive marks + fstab tuning) and loads custom
-    policy modules to patch missing upstream MLS rules.
+    Normally (see git history): validates that a Fedora guest can be
+    switched from the default targeted SELinux policy to mls and boot to a
+    working SSH session in enforcing mode, with cloud-init and networking
+    functional, applying necessary workarounds for an unresolved
+    udev/NetworkManager MLS timing race (permissive marks + fstab tuning).
 
 prepare:
   - name: Install and configure MLS policy in Permissive mode
@@ -76,59 +84,41 @@ prepare:
           rm -f /.autorelabel
           systemctl mask selinux-autorelabel.service
 
-          # ROUND 7 RECHECK (c8c297aa, reverted here): re-tested whether
-          # udev_t/NetworkManager_t are genuinely policy-unfixable now that
-          # 66856419/9fb65dd8 proved our own "-ts boot"/"-ts recent"
-          # ausearch invocations had a real, confirmed blind spot elsewhere
-          # in this investigation. Result: identical to rounds 1-6 -- a
-          # marks-dropped boot (request e9374c8e) still times out with the
-          # same dev-disk-by-uuid device timeout -> local-fs.target collapse
-          # -> emergency mode signature, and the corrected diagnostic still
-          # found zero udev_t/NetworkManager_t AVCs. This time the evidence
-          # doesn't even depend on ausearch's timestamp handling at all: the
-          # serial console log captures every AVC the kernel's own audit
-          # printk fallback emits in real time (kauditd_printk_skb), for the
-          # whole boot, independent of any post-boot query. It shows several
-          # real denials (systemd_tmpfiles_t missing self:capability
-          # net_admin, init_t->initrc_t process:siginh, assorted pre-existing
-          # generator kmsg-write gaps also seen in round 2/a51f2122) -- so
-          # the pipeline demonstrably had every opportunity to log a udev_t
-          # or NetworkManager_t denial too, and again never did.
-          #
-          # Also tried attacking rounds 1-6's "no console shell available"
-          # blocker head-on this round: set a root password (sulogin refuses
-          # a locked/empty hash) and systemd.debug-shell=1 (an always-on
-          # root shell on tty9) specifically so a live setenforce-0 retry --
-          # the technique that found the real cloud-init AVCs -- would be
-          # possible if this hung the same way again. It did hang the same
-          # way again, and the "Enter root password for system maintenance"
-          # prompt is visible in the captured console log, but neither this
-          # plan nor this investigator's tooling has any interactive channel
-          # into Testing Farm's console (confirmed directly: no matching
-          # libvirt domain reachable from qemu:///session either) to type
-          # that password in. So the live-retry technique genuinely cannot
-          # be applied to this failure mode the way it was for cloud-init --
-          # that bug still had a full SSH session to retry commands over;
-          # this one fails before any shell, local or remote, exists at all.
-          # Conclusion stands, now confirmed by two independent, ausearch-
-          # timestamp-independent methods (this console capture, and round
-          # 4's direct sesearch --dontaudit verification): restoring both
-          # marks and the fstab workaround as the correct fix.
+          # ROUND 8 (EXPERIMENT, temporary/diagnostic only -- see the verify
+          # step below for the actual sweep, and the commit that follows
+          # this one for the reverted, permanent state): rounds 1-7 all
+          # concluded "no udev_t/NetworkManager_t AVCs anywhere" from
+          # ausearch queries scoped to exactly those two scontext values,
+          # using the corrected uptime -s boot timestamp since round 7
+          # (c8c297aa/28e9542f) specifically re-verified that scoped query
+          # wasn't itself a victim of the -ts boot/-ts recent blind spot
+          # that hid two real cloud-init AVCs (66856419/9fb65dd8). This
+          # round broadens the net one more time before fully closing the
+          # book: instead of the two domain-level `semanage permissive`
+          # marks, put the WHOLE system in SELINUX=permissive for this one
+          # run (set below, at the sed call), and grep the resulting AVC
+          # dump for anything that could plausibly be udev/device-related
+          # by scontext, tcontext, comm=, or object class -- not just an
+          # exact scontext=udev_t match. `semanage permissive -n -a
+          # udev_t`/`-a NetworkManager_t` are redundant under full-system
+          # permissive and dropped for this run only; `semanage dontaudit
+          # off -N` stays (still needed so nothing is silently suppressed),
+          # with the same `-DB` rebuild guard as every prior round.
+          semanage dontaudit off -N
 
           # WORKAROUND: Mitigate udev MLS overhead timing race.
           # Resolve fstab UUIDs to raw devices and extend timeouts to prevent local-fs.target collapse.
+          # (Kept even under this round's full-system permissive: the timing
+          # race is believed to be raw MLS permission-computation overhead,
+          # not a denial, so permissive mode alone may not avoid it -- this
+          # stays so the boot can actually complete and produce something to
+          # sweep.)
           cp /etc/fstab /etc/fstab.orig
           awk '!/^#/ && NF >= 4 && $3 != "swap" && $1 ~ /^UUID=/ { sub(/^UUID=/, "", $1); print $1 }' /etc/fstab.orig | sort -u | while read -r uuid; do
               dev=$(blkid -U "$uuid" 2>/dev/null) && [ -n "$dev" ] && sed -i "s#UUID=$uuid#$dev#g" /etc/fstab
           done
           cp /etc/fstab /etc/fstab.rewritten
           awk '!/^#/ && NF >= 4 && $3 != "swap" { $4 = $4",nofail,x-systemd.device-timeout=90" } { print }' /etc/fstab.rewritten > /etc/fstab
-
-          # WORKAROUND: Mark timing-sensitive domains permissive.
-          # Disabling dontaudit ensures we catch any hidden AVCs.
-          semanage permissive -n -a udev_t
-          semanage permissive -n -a NetworkManager_t
-          semanage dontaudit off -N
 
           # WORKAROUND (kept as defense-in-depth alongside the real fix in
           # cloudform.te): cloud-init-generator's own runtime enablement
@@ -156,7 +146,11 @@ prepare:
           grubby --update-kernel=ALL --args="audit_backlog_limit=8192"
 
           cloud-init clean --logs
-          sed -i 's/^SELINUX=.*/SELINUX=enforcing/' /etc/selinux/config
+          # ROUND 8 (temporary/diagnostic only, see comments above): full
+          # system permissive instead of enforcing, so the comprehensive
+          # udev sweep below runs against a boot that cannot be blocked by
+          # any denial anywhere, not just udev_t/NetworkManager_t.
+          sed -i 's/^SELINUX=.*/SELINUX=permissive/' /etc/selinux/config
           tmt-reboot -t 1200
       fi
 
@@ -167,17 +161,20 @@ prepare:
       sestatus
 
       echo "=== dmesg | grep -i 'avc:\|denied' ==="
-      dmesg 2>&1 | grep -i 'avc:\|denied' || echo "no matches in dmesg"
+      dmesg_dump=$(dmesg 2>&1)
+      echo "$dmesg_dump" | grep -i 'avc:\|denied' || echo "no matches in dmesg"
 
       echo "=== journalctl -k -b | grep -i 'avc:\|denied' ==="
-      journalctl -k -b 2>&1 | grep -i 'avc:\|denied' || echo "no matches in journalctl"
+      journalctl_k_dump=$(journalctl -k -b 2>&1)
+      echo "$journalctl_k_dump" | grep -i 'avc:\|denied' || echo "no matches in journalctl"
 
       echo "=== AVC/USER_AVC denials this boot (ausearch) ==="
       # NOTE: "-ts boot" has proven unreliable here -- it silently missed
       # real AVCs that computing the actual boot time caught (see the
       # cloud-init socket-permission investigation in the execute step).
       boot_ts=$(date -d "$(uptime -s)" '+%m/%d/%Y %H:%M:%S' 2>/dev/null || echo recent)
-      ausearch -m AVC,USER_AVC -ts "$boot_ts" 2>&1 || echo "no AVCs this boot"
+      avc_dump=$(ausearch -m AVC,USER_AVC -ts "$boot_ts" 2>&1)
+      echo "$avc_dump"
 
       echo "=== any AVCs naming udev_t or NetworkManager_t specifically ==="
       # Rounds 1-6 concluded "not fixable via policy" from this exact query
@@ -190,7 +187,47 @@ prepare:
       # to enforcement, but permissive domains still log what would have
       # been denied (permissive=1), so this stays a free early-warning check
       # for any future re-litigation of the marks.
-      ausearch -m AVC,USER_AVC -ts "$boot_ts" 2>/dev/null | grep -Ei 'udev_t|NetworkManager_t' || echo "none"
+      echo "$avc_dump" | grep -Ei 'udev_t|NetworkManager_t' || echo "none"
+
+      # ROUND 8 (temporary/diagnostic only): the check above only ever
+      # matched an exact "udev_t"/"NetworkManager_t" scontext substring.
+      # Broadening for one comprehensive sweep, against the same corrected
+      # boot_ts AVC dump plus dmesg and journalctl -k -b for consistency
+      # with this investigation's established multi-source approach: any
+      # scontext mentioning udev, any tcontext mentioning udev-related
+      # types (udev_var_run_t, udev_tbl_t, udev_exec_t, ...), any comm=
+      # mentioning udev/systemd-udevd, and a general device/block-related
+      # object-class grep (nvme, blk_file, chr_file) in case something
+      # relevant doesn't literally say "udev" anywhere in the line.
+      echo "=== ROUND 8: comprehensive udev/device sweep of this boot's AVC dump ==="
+      echo "--- by scontext (scontext=...udev...) ---"
+      echo "$avc_dump" | grep -Ei 'scontext=[^ ]*udev' || echo "none"
+      echo "--- by tcontext (tcontext=...udev...) ---"
+      echo "$avc_dump" | grep -Ei 'tcontext=[^ ]*udev' || echo "none"
+      echo "--- by comm= (udev, systemd-udevd, udevadm) ---"
+      echo "$avc_dump" | grep -Ei 'comm="[^"]*(udev|systemd-udevd)[^"]*"' || echo "none"
+      echo "--- by object class / device hints (nvme, blk_file, chr_file), regardless of udev mention ---"
+      echo "$avc_dump" | grep -Ei 'nvme|blk_file|chr_file' || echo "none"
+
+      echo "=== ROUND 8: same four-way sweep against dmesg ==="
+      echo "--- by scontext ---"
+      echo "$dmesg_dump" | grep -Ei 'scontext=[^ ]*udev' || echo "none"
+      echo "--- by tcontext ---"
+      echo "$dmesg_dump" | grep -Ei 'tcontext=[^ ]*udev' || echo "none"
+      echo "--- by comm= ---"
+      echo "$dmesg_dump" | grep -Ei 'comm="[^"]*(udev|systemd-udevd)[^"]*"' || echo "none"
+      echo "--- by object class / device hints ---"
+      echo "$dmesg_dump" | grep -Ei 'nvme|blk_file|chr_file' || echo "none"
+
+      echo "=== ROUND 8: same four-way sweep against journalctl -k -b ==="
+      echo "--- by scontext ---"
+      echo "$journalctl_k_dump" | grep -Ei 'scontext=[^ ]*udev' || echo "none"
+      echo "--- by tcontext ---"
+      echo "$journalctl_k_dump" | grep -Ei 'tcontext=[^ ]*udev' || echo "none"
+      echo "--- by comm= ---"
+      echo "$journalctl_k_dump" | grep -Ei 'comm="[^"]*(udev|systemd-udevd)[^"]*"' || echo "none"
+      echo "--- by object class / device hints ---"
+      echo "$journalctl_k_dump" | grep -Ei 'nvme|blk_file|chr_file' || echo "none"
 
 execute:
   how: tmt
