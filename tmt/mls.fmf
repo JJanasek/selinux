@@ -1,20 +1,12 @@
 summary: MLS Policy Enforcing-Mode Boot Validation
 description: |
-    EXPERIMENT (round 8, temporary/diagnostic only): rounds 1-7 all searched
-    for udev/NetworkManager AVCs narrowly (scontext=udev_t or
-    scontext=NetworkManager_t only) with the corrected uptime -s boot
-    timestamp and found nothing. This round puts the WHOLE system in
-    SELINUX=permissive (not just the two domain-level marks) for one run and
-    sweeps broadly for anything udev/device-related -- by scontext, tcontext,
-    comm=, or object class -- before closing the book on "timing issue, not
-    policy issue". Also loads custom policy modules to patch missing
-    upstream MLS rules.
+    Validates that a Fedora guest can be switched from the default targeted
+    SELinux policy to mls and boot to a working SSH session in enforcing mode,
+    with cloud-init and networking functional.
 
-    Normally (see git history): validates that a Fedora guest can be
-    switched from the default targeted SELinux policy to mls and boot to a
-    working SSH session in enforcing mode, with cloud-init and networking
-    functional, applying necessary workarounds for an unresolved
-    udev/NetworkManager MLS timing race (permissive marks + fstab tuning).
+    Applies necessary workarounds for an unresolved udev/NetworkManager
+    MLS timing race (permissive marks + fstab tuning) and loads custom
+    policy modules to patch missing upstream MLS rules.
 
 prepare:
   - name: Install and configure MLS policy in Permissive mode
@@ -84,35 +76,30 @@ prepare:
           rm -f /.autorelabel
           systemctl mask selinux-autorelabel.service
 
-          # ROUND 8 (EXPERIMENT, temporary/diagnostic only -- see the verify
-          # step below for the actual sweep, and the commit that follows
-          # this one for the reverted, permanent state): rounds 1-7 all
-          # concluded "no udev_t/NetworkManager_t AVCs anywhere" from
-          # ausearch queries scoped to exactly those two scontext values,
-          # using the corrected uptime -s boot timestamp since round 7
-          # (c8c297aa/28e9542f) specifically re-verified that scoped query
-          # wasn't itself a victim of the -ts boot/-ts recent blind spot
-          # that hid two real cloud-init AVCs (66856419/9fb65dd8). This
-          # round broadens the net one more time before fully closing the
-          # book: instead of the two domain-level `semanage permissive`
-          # marks, put the WHOLE system in SELINUX=permissive for this one
-          # run (set below, at the sed call), and grep the resulting AVC
-          # dump for anything that could plausibly be udev/device-related
-          # by scontext, tcontext, comm=, or object class -- not just an
-          # exact scontext=udev_t match. `semanage permissive -n -a
-          # udev_t`/`-a NetworkManager_t` are redundant under full-system
-          # permissive and dropped for this run only; `semanage dontaudit
-          # off -N` stays (still needed so nothing is silently suppressed),
-          # with the same `-DB` rebuild guard as every prior round.
+          # ROUND 8 CONFIRMED (46410f1c/76916137/92863e37/7ac1e9ac, this
+          # commit reverts the temporary full-system-permissive diagnostic
+          # back to the permanent enforcing state): rounds 1-7 all concluded
+          # "no udev_t/NetworkManager_t AVCs anywhere" from ausearch queries
+          # scoped to exactly those two scontext values. Round 8 broadened
+          # the net once more before closing the book -- full-system
+          # SELINUX=permissive plus a comprehensive scontext/tcontext/comm=/
+          # object-class sweep (still in the verify step below, kept
+          # permanently) -- and, once a real bug in the ausearch invocation
+          # itself was found and fixed (7ac1e9ac: -ts needs date and time as
+          # two separate arguments, not one merged string, or it silently
+          # errors on every single query this plan has ever run), the sweep
+          # genuinely executed against ~150 real AVC records and still found
+          # nothing udev/NetworkManager-related beyond what rounds 1-7
+          # already documented. Restoring the two domain-level marks below.
+          #
+          # WORKAROUND: Mark timing-sensitive domains permissive.
+          # Disabling dontaudit ensures we catch any hidden AVCs.
+          semanage permissive -n -a udev_t
+          semanage permissive -n -a NetworkManager_t
           semanage dontaudit off -N
 
           # WORKAROUND: Mitigate udev MLS overhead timing race.
           # Resolve fstab UUIDs to raw devices and extend timeouts to prevent local-fs.target collapse.
-          # (Kept even under this round's full-system permissive: the timing
-          # race is believed to be raw MLS permission-computation overhead,
-          # not a denial, so permissive mode alone may not avoid it -- this
-          # stays so the boot can actually complete and produce something to
-          # sweep.)
           cp /etc/fstab /etc/fstab.orig
           awk '!/^#/ && NF >= 4 && $3 != "swap" && $1 ~ /^UUID=/ { sub(/^UUID=/, "", $1); print $1 }' /etc/fstab.orig | sort -u | while read -r uuid; do
               dev=$(blkid -U "$uuid" 2>/dev/null) && [ -n "$dev" ] && sed -i "s#UUID=$uuid#$dev#g" /etc/fstab
@@ -146,11 +133,7 @@ prepare:
           grubby --update-kernel=ALL --args="audit_backlog_limit=8192"
 
           cloud-init clean --logs
-          # ROUND 8 (temporary/diagnostic only, see comments above): full
-          # system permissive instead of enforcing, so the comprehensive
-          # udev sweep below runs against a boot that cannot be blocked by
-          # any denial anywhere, not just udev_t/NetworkManager_t.
-          sed -i 's/^SELINUX=.*/SELINUX=permissive/' /etc/selinux/config
+          sed -i 's/^SELINUX=.*/SELINUX=enforcing/' /etc/selinux/config
           tmt-reboot -t 1200
       fi
 
@@ -215,16 +198,22 @@ prepare:
       # for any future re-litigation of the marks.
       echo "$avc_dump" | grep -Ei 'udev_t|NetworkManager_t' || echo "none"
 
-      # ROUND 8 (temporary/diagnostic only): the check above only ever
-      # matched an exact "udev_t"/"NetworkManager_t" scontext substring.
-      # Broadening for one comprehensive sweep, against the same corrected
-      # boot_ts AVC dump plus dmesg and journalctl -k -b for consistency
-      # with this investigation's established multi-source approach: any
-      # scontext mentioning udev, any tcontext mentioning udev-related
-      # types (udev_var_run_t, udev_tbl_t, udev_exec_t, ...), any comm=
-      # mentioning udev/systemd-udevd, and a general device/block-related
-      # object-class grep (nvme, blk_file, chr_file) in case something
-      # relevant doesn't literally say "udev" anywhere in the line.
+      # ROUND 8: the check above only ever matched an exact
+      # "udev_t"/"NetworkManager_t" scontext substring. Broadening for a
+      # comprehensive sweep, against the same corrected boot_ts AVC dump
+      # plus dmesg and journalctl -k -b for consistency with this
+      # investigation's established multi-source approach: any scontext
+      # mentioning udev, any tcontext mentioning udev-related types
+      # (udev_var_run_t, udev_tbl_t, udev_exec_t, ...), any comm= mentioning
+      # udev/systemd-udevd, and a general device/block-related object-class
+      # grep (nvme, blk_file, chr_file) in case something relevant doesn't
+      # literally say "udev" anywhere in the line. Kept permanently
+      # alongside the narrower check above (same rationale: a free early-
+      # warning signal for any future re-litigation of the marks) -- once
+      # the ausearch invocation bug above was fixed, this sweep ran against
+      # ~150 real AVC records from a full-system-permissive boot and found
+      # nothing udev/NetworkManager-related beyond what's already
+      # documented in this branch's history.
       echo "=== ROUND 8: comprehensive udev/device sweep of this boot's AVC dump ==="
       echo "--- by scontext (scontext=...udev...) ---"
       echo "$avc_dump" | grep -Ei 'scontext=[^ ]*udev' || echo "none"
