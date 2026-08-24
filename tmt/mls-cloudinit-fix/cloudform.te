@@ -71,6 +71,11 @@ miscfiles_read_certs(cloudform_domain)
 
 allow cloud_init_t self:capability { fowner chown fsetid dac_read_search dac_override kill net_admin setgid sys_admin };
 allow cloud_init_t self:passwd { passwd rootok };
+# AVC: denied { setfscreate } for comm="sed" scontext=cloud_init_t
+# tcontext=cloud_init_t -- only showed up once the selinux_config_t "read"
+# denial below was fixed and cloud-init's sed-based config edits actually
+# ran; not evidenced before that point
+allow cloud_init_t self:process setfscreate;
 
 allow cloud_init_t self:udp_socket create_socket_perms;
 
@@ -121,14 +126,17 @@ optional_policy(`
     # cloud-init (and udevadm, run under cloud_init_t via the udev block
     # below) reads /etc/selinux/config directly to detect the running
     # SELinux mode -- AVC: denied { read } for comm="cloud-init"/"udevadm"
-    # name="config" ... tcontext=selinux_config_t. Only "read" was ever
-    # denied (not getattr/open), so grant exactly that instead of the
-    # broader seutil_read_config() interface.
+    # name="config" ... tcontext=selinux_config_t. A follow-up run (after
+    # granting "read") showed "open" is checked separately and was also
+    # denied for the same two callers; still granting exactly the two bits
+    # actually observed as denied instead of the broader
+    # seutil_read_config() interface (which also grants dir listing,
+    # ioctl, lock, and lnk_file reads that were never denied).
     gen_require(`
         type selinux_config_t;
     ')
 
-    allow cloud_init_t selinux_config_t:file read;
+    allow cloud_init_t selinux_config_t:file { open read };
 ')
 
 systemd_dbus_chat_hostnamed(cloud_init_t)
