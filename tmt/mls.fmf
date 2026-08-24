@@ -158,6 +158,19 @@ execute:
     echo "=== cloud-init-generator's own log (ds-identify trace, written pre-journald) ==="
     cat /run/cloud-init/cloud-init-generator.log 2>&1 || echo "no cloud-init-generator.log"
 
+    # DIAGNOSTIC: stage shims (cloud-init-local/cloud-config/cloud-final) fail
+    # with "nc: ...sock: Permission denied" connecting to cloud-init-main's
+    # sync sockets, but the audit2allow section below has shown zero AVCs
+    # naming cloud-init/nc/cloud_init_t in two runs straight -- so before
+    # assuming a hidden SELinux gap, check the boring DAC explanation: is
+    # /run/cloud-init/share (created 0700 by cloud-init-main) and its sockets
+    # actually owned by the same user these shims run as?
+    echo "=== /run/cloud-init/share ownership, perms, and SELinux labels ==="
+    ls -laZ /run/cloud-init 2>&1
+    ls -laZ /run/cloud-init/share 2>&1
+    echo "=== configured User/sandboxing for cloud-init units (root by default?) ==="
+    systemctl show cloud-init-main.service cloud-init-local.service cloud-config.service cloud-final.service -p User -p Group -p DynamicUser -p NoNewPrivileges -p CapabilityBoundingSet -p ProtectSystem -p PrivateTmp -p RootDirectory -p RootImage || true
+
     echo "=== failed units / stuck jobs this boot ==="
     systemctl --failed --no-pager || true
     systemctl list-jobs || true
