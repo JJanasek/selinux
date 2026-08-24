@@ -134,7 +134,7 @@ execute:
     timeout 120 cloud-init status --wait || true
 
     echo "=== cloud-init result ==="
-    long_status=$(cloud-init status --long)
+    long_status=$(cloud-init status --long) || true
     echo "$long_status"
 
     echo "=== cloud-init running domain (expected: cloud_init_t) ==="
@@ -153,7 +153,7 @@ execute:
 
     echo "=== is cloud-init.target actually enabled/pulled into the boot? ==="
     systemctl show cloud-init.target -p ActiveState -p Wants || true
-    ls -la /etc/systemd/system/multi-user.target.wants/cloud-init.target /run/systemd/generator*/multi-user.target.wants/cloud-init.target 2>&1
+    ls -la /etc/systemd/system/multi-user.target.wants/cloud-init.target /run/systemd/generator*/multi-user.target.wants/cloud-init.target 2>&1 || true
 
     echo "=== cloud-init-generator's own log (ds-identify trace, written pre-journald) ==="
     cat /run/cloud-init/cloud-init-generator.log 2>&1 || echo "no cloud-init-generator.log"
