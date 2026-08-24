@@ -24,6 +24,20 @@ prepare:
       mkdir -p /etc/cloud/cloud.cfg.d
       echo 'ssh_deletekeys: false' > /etc/cloud/cloud.cfg.d/99-preserve-ssh-host-keys.cfg
 
+      # DIAGNOSTIC: cloud-init's single-process model finishes (and often
+      # exits entirely) within ~10s of boot -- long before this plan's SSH
+      # execute step reconnects -- so `ps -eZ` after boot can never catch it
+      # and journald's per-message _SELINUX_CONTEXT has proven unreliable to
+      # grep for it too. bootcmd runs a subprocess (`sh -c ...`) directly
+      # from inside the cloud-init process itself, inheriting its live
+      # domain with no exec transition of its own (sh has no cloudform
+      # entrypoint type), so `id -Z` here is a first-hand, non-racy capture
+      # of the domain cloud-init actually executed in.
+      cat > /etc/cloud/cloud.cfg.d/98-selinux-context-check.cfg <<'CICFG'
+      bootcmd:
+        - [ sh, -c, "id -Z > /var/log/cloud-init-selinux-context.log 2>&1" ]
+      CICFG
+
       # Reset cloud-init state to force a full run under MLS
       cloud-init clean --logs
 
@@ -200,10 +214,17 @@ execute:
         echo "FAIL: cloud-init did not reach 'done' (got: '$final_status')"
         exit 1
     fi
-    # cloud-init-main.service is short-lived once all stages complete, so a
-    # process may no longer exist by the time we check -- fall back to the
-    # journal, which journald tags with the writer's SELinux context.
-    if ! ps -eZ | grep -q cloud_init_t && ! journalctl -u cloud-init-main.service -o verbose -b 2>/dev/null | grep -q cloud_init_t; then
+    # cloud-init-main.service is short-lived (often gone within ~10s of
+    # boot, well before this SSH execute step reconnects), so both `ps -eZ`
+    # and journald's per-message SELinux context proved too racy/unreliable
+    # to catch it after the fact. Instead read back the bootcmd-captured
+    # `id -Z`, which ran as a direct subprocess of cloud-init itself (see
+    # 98-selinux-context-check.cfg in prepare) and so reflects the domain
+    # cloud-init genuinely executed in, not a snapshot taken after it exited.
+    echo "=== cloud-init's own SELinux context (captured via bootcmd) ==="
+    context_log=$(cat /var/log/cloud-init-selinux-context.log 2>&1) || true
+    echo "$context_log"
+    if ! echo "$context_log" | grep -q cloud_init_t; then
         echo "FAIL: cloud-init reported done, but no evidence it ever ran under cloud_init_t"
         exit 1
     fi
