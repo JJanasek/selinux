@@ -109,6 +109,9 @@ execute:
     echo "=== SELinux status ==="
     sestatus
 
+    echo "=== waiting (up to 120s) for cloud-init to finish ==="
+    timeout 120 cloud-init status --wait || true
+
     echo "=== cloud-init result ==="
     cloud-init status --long || true
 
