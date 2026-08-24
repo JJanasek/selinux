@@ -118,22 +118,42 @@ execute:
     echo "=== cloud-init running domain (expected: cloud_init_t) ==="
     ps -eZ | grep -i cloud || true
 
-    # DIAGNOSTIC: cloud-init never leaves "not started" even after the wait
-    # above, with zero AVCs naming it anywhere -- so the next questions are
-    # whether systemd ever actually queued its units into the boot
-    # transaction at all (vs. them being enabled-but-never-pulled-in), and
-    # whether anything upstream in their dependency chain is stuck/failed.
+    # DIAGNOSTIC (round 1 findings): round 1 found this image's cloud-init
+    # renamed the classic "network stage" unit to cloud-init-main.service
+    # (cloud-init.service "could not be found"), and every cloud-init/
+    # cloud-config/cloud-final unit sat "inactive (dead)" with a literal
+    # ZERO matching journal entries -- not even a "condition failed,
+    # skipping" line. That means systemd never even considered them this
+    # boot, which points at cloud-init.target (their common, generator-only
+    # pull-in point -- it has no static [Install] of its own) never being
+    # queued at all. Round 2 goes straight at that: the actual renamed
+    # unit, cloud-init.target's own definition, and whether the generator
+    # left behind the runtime .wants/ symlink (or any trace of running).
     echo "=== cloud-init unit enablement (static WantedBy symlinks) ==="
     systemctl list-unit-files 'cloud-init*' 'cloud-config*' 'cloud-final*' || true
 
     echo "=== cloud-init stage unit status (active/failed/masked?) ==="
-    systemctl status --no-pager --full cloud-init-local.service cloud-init.service cloud-config.service cloud-final.service || true
+    systemctl status --no-pager --full cloud-init-local.service cloud-init-main.service cloud-config.service cloud-final.service || true
 
     echo "=== full unit definitions incl. any generator drop-ins (Requires/Wants/After/Before) ==="
-    systemctl cat cloud-init-local.service cloud-init.service cloud-config.service cloud-final.service || true
+    systemctl cat cloud-init-local.service cloud-init-main.service cloud-config.service cloud-final.service cloud-init.target || true
+
+    echo "=== cloud-init.target: what wants/requires it, and its own condition result ==="
+    systemctl show cloud-init.target -p Wants -p WantedBy -p RequiredBy -p ConditionResult -p ActiveState -p LoadState -p Description || true
 
     echo "=== cloud-init.target dependency tree (is a dependency failed/inactive?) ==="
     systemctl list-dependencies cloud-init.target --all || true
+
+    echo "=== did the generator actually write a runtime pull-in symlink for cloud-init.target? ==="
+    find /run/systemd/generator* -iname '*cloud*' -exec ls -la {} \; 2>&1 || true
+    ls -la /run/systemd/generator/multi-user.target.wants/ 2>&1 | grep -i cloud || echo "no cloud-init.target symlink in multi-user.target.wants"
+
+    echo "=== cloud-init's own generator/runtime state dir ==="
+    find /run/cloud-init -maxdepth 2 -exec ls -la {} \; 2>&1 || echo "/run/cloud-init missing or empty"
+
+    echo "=== cloud-init-generator's own log (ds-identify trace, written pre-journald) ==="
+    cat /run/cloud-init/cloud-init-generator.log 2>&1 || echo "no cloud-init-generator.log"
+    cat /run/cloud-init/ds-identify.log 2>&1 || echo "no ds-identify.log"
 
     echo "=== any systemd jobs still stuck/waiting ==="
     systemctl list-jobs || true
@@ -146,6 +166,9 @@ execute:
 
     echo "=== journal for all cloud-init/cloud-config/cloud-final units ==="
     journalctl -u 'cloud-init*' -u 'cloud-config*' -u 'cloud-final*' -b --no-pager || true
+
+    echo "=== unfiltered boot journal grep for cloud, in case PID1 logged it untagged ==="
+    journalctl -b --no-pager 2>&1 | grep -i cloud || echo "no cloud-init mentions anywhere in journalctl -b"
 
     echo "=== audit2allow suggestions for any denials above ==="
     ausearch -m AVC -ts boot 2>/dev/null | audit2allow || true
