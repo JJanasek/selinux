@@ -161,19 +161,43 @@ prepare:
       sestatus
 
       echo "=== dmesg | grep -i 'avc:\|denied' ==="
-      dmesg_dump=$(dmesg 2>&1) || true
+      dmesg_dump=$(dmesg 2>&1) || dmesg_dump="(dmesg failed to run)"
       echo "$dmesg_dump" | grep -i 'avc:\|denied' || echo "no matches in dmesg"
 
       echo "=== journalctl -k -b | grep -i 'avc:\|denied' ==="
-      journalctl_k_dump=$(journalctl -k -b 2>&1) || true
+      journalctl_k_dump=$(journalctl -k -b 2>&1) || journalctl_k_dump="(journalctl -k -b failed to run)"
       echo "$journalctl_k_dump" | grep -i 'avc:\|denied' || echo "no matches in journalctl"
 
       echo "=== AVC/USER_AVC denials this boot (ausearch) ==="
       # NOTE: "-ts boot" has proven unreliable here -- it silently missed
       # real AVCs that computing the actual boot time caught (see the
       # cloud-init socket-permission investigation in the execute step).
-      boot_ts=$(date -d "$(uptime -s)" '+%m/%d/%Y %H:%M:%S' 2>/dev/null || echo recent)
-      avc_dump=$(ausearch -m AVC,USER_AVC -ts "$boot_ts" 2>&1) || true
+      #
+      # TIMESTAMP INVESTIGATION: request 60da61ab (round 8, permissive
+      # rerun) showed dmesg/journalctl -k -b catching several real AVCs in
+      # this exact boot that "ausearch -ts $boot_ts" found zero records
+      # for. Root cause is believed to be a clock-domain mismatch, not a
+      # format problem (verified against `man ausearch` and this image's
+      # locale: en_US.UTF-8's `date '+%x'` is MM/DD/YYYY, matching what's
+      # produced below, so ausearch should parse it fine). dmesg and
+      # `journalctl -k -b` render kernel messages using CLOCK_MONOTONIC
+      # deltas re-based against the *current* (post-boot, post-NTP-sync)
+      # wall clock at query time, so they display accurate absolute times
+      # for early-boot events no matter what the wall clock said when the
+      # event actually fired. audit records, by contrast, are stamped with
+      # CLOCK_REALTIME at write time -- if chronyd/NTP hasn't stepped the
+      # clock yet when an early generator/udev AVC is logged (a real
+      # possibility in the first seconds of boot, before networking is
+      # up), that record's embedded timestamp can be earlier than the
+      # `uptime -s`-derived boot_ts computed later with the now-corrected
+      # clock, so a strict "-ts $boot_ts" (>= boot_ts) silently excludes
+      # it. Subtracting a small buffer here is a safe mitigation: -ts is
+      # inclusive ("equal to or after"), so widening the window can only
+      # catch more of this boot's own events, and 60s is comfortably
+      # smaller than the reboot's own device-timeout budgets, so it should
+      # not reach back into the prior (relabel) boot's AVCs.
+      boot_ts=$(date -d "$(uptime -s) - 60 seconds" '+%m/%d/%Y %H:%M:%S' 2>/dev/null || echo recent)
+      avc_dump=$(ausearch -m AVC,USER_AVC -ts "$boot_ts" 2>&1) || avc_dump="(ausearch found no records for this boot)"
       echo "$avc_dump"
 
       echo "=== any AVCs naming udev_t or NetworkManager_t specifically ==="
@@ -285,8 +309,14 @@ execute:
     # unconfined_u user context no longer exists under this loaded MLS
     # policy, which makes audit2allow choke and stop producing useful
     # output. Compute the actual current boot's start time instead, so
-    # this only ever looks at AVCs from this boot.
-    boot_ts=$(date -d "$(uptime -s)" '+%m/%d/%Y %H:%M:%S' 2>/dev/null || echo recent)
+    # this only ever looks at AVCs from this boot. Subtract a small buffer
+    # for the same reason as the prepare step's verify script: early-boot
+    # audit records are stamped with CLOCK_REALTIME before chronyd/NTP has
+    # necessarily stepped the clock, so a strict ">= uptime -s" boundary
+    # can exclude genuinely-this-boot events whose embedded timestamp is
+    # technically earlier than the (accurately, but later-computed)
+    # boot_ts -- see the longer writeup in the prepare step.
+    boot_ts=$(date -d "$(uptime -s) - 60 seconds" '+%m/%d/%Y %H:%M:%S' 2>/dev/null || echo recent)
     ausearch -m AVC -ts "$boot_ts" 2>/dev/null | audit2allow || true
 
     echo "=== any AVCs naming cloud_init_t specifically (raw, in case audit2allow above choked) ==="
