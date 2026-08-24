@@ -121,10 +121,10 @@ prepare:
 
       echo "=== AVC/USER_AVC denials this boot (ausearch) ==="
       # NOTE: "-ts boot" has proven unreliable here -- it silently missed
-      # real, already-occurring AVCs that "-ts recent" caught (see the
-      # cloud-init socket-permission investigation in the execute step),
-      # likely due to clock/timezone not being settled this early in boot.
-      ausearch -m AVC,USER_AVC -ts recent 2>&1 || echo "no AVCs this boot"
+      # real AVCs that computing the actual boot time caught (see the
+      # cloud-init socket-permission investigation in the execute step).
+      boot_ts=$(date -d "$(uptime -s)" '+%m/%d/%Y %H:%M:%S' 2>/dev/null || echo recent)
+      ausearch -m AVC,USER_AVC -ts "$boot_ts" 2>&1 || echo "no AVCs this boot"
 
 execute:
   how: tmt
@@ -177,9 +177,17 @@ execute:
 
     echo "=== audit2allow suggestions for any denials above ==="
     # NOTE: "-ts boot" silently missed real AVCs earlier in this same
-    # investigation (see "-ts recent" a few lines up, which caught them) --
-    # using "-ts recent" here too so this diagnostic is actually trustworthy.
-    ausearch -m AVC -ts recent 2>/dev/null | audit2allow || true
+    # investigation, and "-ts recent" (a fixed 10-minute window) can reach
+    # back far enough to catch stale pre-MLS-switch entries whose
+    # unconfined_u user context no longer exists under this loaded MLS
+    # policy, which makes audit2allow choke and stop producing useful
+    # output. Compute the actual current boot's start time instead, so
+    # this only ever looks at AVCs from this boot.
+    boot_ts=$(date -d "$(uptime -s)" '+%m/%d/%Y %H:%M:%S' 2>/dev/null || echo recent)
+    ausearch -m AVC -ts "$boot_ts" 2>/dev/null | audit2allow || true
+
+    echo "=== any AVCs naming cloud_init_t specifically (raw, in case audit2allow above choked) ==="
+    ausearch -m AVC -ts "$boot_ts" 2>/dev/null | grep -i cloud_init_t || echo "none"
 
     # REAL VERIFICATION: unlike everything above, this is not `|| true`.
     # Whether cloud-init actually finished under cloud_init_t is the
@@ -192,8 +200,11 @@ execute:
         echo "FAIL: cloud-init did not reach 'done' (got: '$final_status')"
         exit 1
     fi
-    if ! ps -eZ | grep -q cloud_init_t; then
-        echo "FAIL: cloud-init reported done, but no process ever ran under cloud_init_t"
+    # cloud-init-main.service is short-lived once all stages complete, so a
+    # process may no longer exist by the time we check -- fall back to the
+    # journal, which journald tags with the writer's SELinux context.
+    if ! ps -eZ | grep -q cloud_init_t && ! journalctl -u cloud-init-main.service -o verbose -b 2>/dev/null | grep -q cloud_init_t; then
+        echo "FAIL: cloud-init reported done, but no evidence it ever ran under cloud_init_t"
         exit 1
     fi
     echo "PASS: cloud-init reached 'done' and ran under cloud_init_t"
