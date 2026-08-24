@@ -126,17 +126,19 @@ optional_policy(`
     # cloud-init (and udevadm, run under cloud_init_t via the udev block
     # below) reads /etc/selinux/config directly to detect the running
     # SELinux mode -- AVC: denied { read } for comm="cloud-init"/"udevadm"
-    # name="config" ... tcontext=selinux_config_t. A follow-up run (after
-    # granting "read") showed "open" is checked separately and was also
-    # denied for the same two callers; still granting exactly the two bits
-    # actually observed as denied instead of the broader
-    # seutil_read_config() interface (which also grants dir listing,
-    # ioctl, lock, and lnk_file reads that were never denied).
+    # name="config" ... tcontext=selinux_config_t. Two follow-up runs
+    # (after granting "read", then again after also granting "open") each
+    # surfaced the next permission the same open(2)/read(2) sequence
+    # checks -- "open" and then "getattr" -- for the same two callers.
+    # Still granting exactly the three bits actually observed as denied
+    # instead of the broader seutil_read_config() interface (which also
+    # grants dir listing, ioctl, lock, and lnk_file reads that were never
+    # denied).
     gen_require(`
         type selinux_config_t;
     ')
 
-    allow cloud_init_t selinux_config_t:file { open read };
+    allow cloud_init_t selinux_config_t:file { getattr open read };
 ')
 
 systemd_dbus_chat_hostnamed(cloud_init_t)
