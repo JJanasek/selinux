@@ -481,7 +481,7 @@ execute:
     # the same denial class exists but stays latent/permissive-logged rather
     # than enforced, which would mean it's present on both branches and just
     # not yet fatal on this one.
-    echo "=== FORENSICS: comm=bash or comm=sshd AVCs this boot ==="
+    echo "=== FORENSICS: comm=bash or comm=sshd AVCs this boot (any class/permission) ==="
     ausearch -m AVC,USER_AVC -ts "$boot_date" "$boot_time" 2>/dev/null | grep -Ei 'comm="(bash|sshd|login|sshd-session)"' || echo "none"
 
     echo "=== FORENSICS: process class transition/dyntransition/entrypoint/noatsecure denials this boot ==="
@@ -489,6 +489,35 @@ execute:
 
     echo "=== FORENSICS: file-class execute/execute_no_trans/entrypoint denials on bin_t/shell_exec_t this boot ==="
     ausearch -m AVC,USER_AVC -ts "$boot_date" "$boot_time" 2>/dev/null | grep -Ei 'class=file.*(execute|entrypoint)' || echo "none"
+
+    # FORENSICS (pipe/fd handoff theory): sshd-session hands a login shell
+    # its stdin/stdout pipes, then dyntransitions the process into the
+    # user's role (e.g. sysadm_t) before exec'ing the shell. Reviewing
+    # userdom_dyntransition_admin_users (userdomain.if) shows it grants
+    # ONLY "allow $1 admindomain:process dyntransition" -- unlike the
+    # analogous userdom_xsession_spec_domtrans_unpriv_users interface,
+    # which explicitly bundles fd:use + fifo_file perms + sigchld alongside
+    # the transition itself. mlssshpipes.te (this repo's backport of
+    # upstream a589b1b5/#3286) only adds "domain -> sshd_session_t:fifo_file
+    # rw_inherited_fifo_file_perms" -- it does NOT grant "fd use", and
+    # nothing else in the tree grants sysadm_t/admindomain fd:use on
+    # sshd_session_t either. If that gap is real, the kernel's own
+    # exec-time fd flush (not an EACCES on execve itself) would likely
+    # just silently close the inherited stdio fds rather than produce the
+    # literal "/bin/bash: Permission denied" text -- so this class of
+    # denial is plausible but not a proven match for that exact string.
+    # Check for it directly rather than reason about it further.
+    echo "=== FORENSICS: class=fd denials this boot (pipe/fd handoff theory) ==="
+    ausearch -m AVC,USER_AVC -ts "$boot_date" "$boot_time" 2>/dev/null | grep -Ei 'class=fd\b' || echo "none"
+
+    echo "=== FORENSICS: class=fifo_file denials this boot ==="
+    ausearch -m AVC,USER_AVC -ts "$boot_date" "$boot_time" 2>/dev/null | grep -Ei 'class=fifo_file\b' || echo "none"
+
+    echo "=== FORENSICS: class=unix_stream_socket or unix_dgram_socket denials this boot ==="
+    ausearch -m AVC,USER_AVC -ts "$boot_date" "$boot_time" 2>/dev/null | grep -Ei 'class=unix_(stream|dgram)_socket\b' || echo "none"
+
+    echo "=== FORENSICS: class=capability denials this boot ==="
+    ausearch -m AVC,USER_AVC -ts "$boot_date" "$boot_time" 2>/dev/null | grep -Ei 'class=capability\b' || echo "none"
 
     echo "=== FORENSICS: full raw AVC/USER_AVC dump this boot (unfiltered, for anything the greps above miss) ==="
     ausearch -m AVC,USER_AVC -ts "$boot_date" "$boot_time" 2>&1 || echo "no AVCs this boot"
