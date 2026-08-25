@@ -79,9 +79,14 @@ prepare:
           rm -f /.autorelabel
           systemctl mask selinux-autorelabel.service
 
-          # udev_t/NetworkManager_t carry a real, separately-evidenced
-          # AVC/permission gap under mls; mark them permissive rather
-          # than chase individual rules.
+          # Empirically required: a dedicated bisection test that removed
+          # only these two marks (ssh_sysadm_login on, fstab tuning kept)
+          # reproduced a full boot hang (no SSH, no network reachability
+          # at all for 10+ min) -- yet 8 rounds of AVC auditing, including
+          # with dontaudit off, never caught a denial explaining why.
+          # Mechanism not understood: possibly a race/timing effect, or
+          # something outside what audit records. Keep as a pair; only
+          # tested/confirmed together, not individually.
           semanage permissive -n -a udev_t
           semanage permissive -n -a NetworkManager_t
 
@@ -97,16 +102,12 @@ prepare:
           # investigation that found this.
           semanage boolean -n -m --on ssh_sysadm_login
 
-          # Defense-in-depth against boot-timing sensitivity (never
-          # confirmed as the actual cause of anything, but cheap and
-          # harmless): resolve fstab UUIDs to raw devices and give
-          # local-fs.target more slack before giving up on a device.
-          cp /etc/fstab /etc/fstab.orig
-          awk '!/^#/ && NF >= 4 && $3 != "swap" && $1 ~ /^UUID=/ { sub(/^UUID=/, "", $1); print $1 }' /etc/fstab.orig | sort -u | while read -r uuid; do
-              dev=$(blkid -U "$uuid" 2>/dev/null) && [ -n "$dev" ] && sed -i "s#UUID=$uuid#$dev#g" /etc/fstab
-          done
-          cp /etc/fstab /etc/fstab.rewritten
-          awk '!/^#/ && NF >= 4 && $3 != "swap" { $4 = $4",nofail,x-systemd.device-timeout=90" } { print }' /etc/fstab.rewritten > /etc/fstab
+          # (fstab UUID->device rewrite + nofail,device-timeout tuning was
+          # tested and removed: a dedicated run with both marks above kept
+          # and this tuning entirely absent booted cleanly in ~24s with
+          # NetworkManager/systemd-udevd active and zero AVCs. It was
+          # speculative boot-timing scaffolding with no evidence behind
+          # it, unlike the two marks above.)
 
           # Defense-in-depth alongside the real fix in cloudform.te:
           # cloud-init.target ships with no static [Install] section, so
