@@ -129,8 +129,45 @@ prepare:
           # Use -DB to guarantee a policy rebuild without silently restoring dontaudit rules
           semodule -DB
 
-          # Raise audit backlog so early-boot AVCs survive for the verification step
-          grubby --update-kernel=ALL --args="audit_backlog_limit=8192"
+          # ROUND 9: the leading theory for this hang -- genuine MLS
+          # per-syscall overhead delaying udev device enumeration past
+          # boot timeouts -- has never actually been observed; it's an
+          # inference from elimination (rounds 1-8 ruled out AVCs, MLS
+          # trust gaps, and range width, but never saw the failing boot
+          # itself). The emergency-mode shell this hang lands in is a
+          # dead end for post-mortem: root is locked and Testing Farm
+          # gives no interactive console, so journalctl -b for that exact
+          # boot is unreachable. The one channel that survives an
+          # unreachable root shell is whatever systemd/udev write
+          # directly to the serial console, which Testing Farm captures
+          # independently of any guest access.
+          #
+          # Confirm the guest already has a serial console configured
+          # before relying on it, rather than assume -- this Fedora cloud
+          # image's own pre-login banner ("Kernel ... on x86_64 (ttyS0)",
+          # observed in prior rounds' console logs) confirms agetty is
+          # already running on ttyS0, which only happens if console=ttyS0
+          # is on the kernel cmdline, but add it explicitly if somehow
+          # missing so the debug logging below has somewhere to land.
+          if ! grubby --info=DEFAULT | grep -q 'console=ttyS0'; then
+              grubby --update-kernel=ALL --args="console=ttyS0,115200n8"
+          fi
+
+          # Raise audit backlog so early-boot AVCs survive for the
+          # verification step, and force systemd/udev to dump everything
+          # to that serial console at debug verbosity so a repeat of this
+          # hang leaves real evidence instead of silence: an explicit
+          # udev worker timeout/kill message would confirm a userspace
+          # timeout-and-kill; a kernel hung_task/"blocked for more than N
+          # seconds" message (or the log simply stopping mid-line with no
+          # further kernel activity) would instead point to a kernel-level
+          # stall; an explicit ATA/NVMe/block-layer error would point to
+          # I/O starvation; and a udev-internal event-processing error at
+          # debug level would point to a race/bug in udev itself rather
+          # than any of the above.
+          grubby --update-kernel=ALL --args="audit_backlog_limit=8192 systemd.journald.forward_to_console=1 systemd.log_level=debug udev.log_level=debug"
+          echo "=== confirm all kernel args landed on the default boot entry ==="
+          grubby --info=DEFAULT | grep args
 
           cloud-init clean --logs
           sed -i 's/^SELINUX=.*/SELINUX=enforcing/' /etc/selinux/config
