@@ -165,9 +165,99 @@ prepare:
           # I/O starvation; and a udev-internal event-processing error at
           # debug level would point to a race/bug in udev itself rather
           # than any of the above.
-          grubby --update-kernel=ALL --args="audit_backlog_limit=8192 systemd.journald.forward_to_console=1 systemd.log_level=debug udev.log_level=debug"
+          grubby --update-kernel=ALL --args="audit_backlog_limit=8192 systemd.journald.forward_to_console=1 systemd.log_level=debug udev.log_level=debug systemd.debug_shell=ttyS0"
           echo "=== confirm all kernel args landed on the default boot entry ==="
           grubby --info=DEFAULT | grep args
+
+          # NEW: passive, non-interactive diagnostic dumper. Every avenue for
+          # *interacting* with the guest during the hang has failed --
+          # Testing Farm's serial console goes silent with no way to type
+          # into it once the reboot times out, and neither 1minutetip's
+          # virsh nor its OpenStack console are reachable from this sandbox.
+          # But Testing Farm DOES reliably capture whatever the guest itself
+          # writes to /dev/console (every console-*.log gathered so far
+          # proves this). So instead of chasing interactivity further, make
+          # the guest keep dumping its own state to the serial console on a
+          # tight loop for as long as anything is still being scheduled at
+          # all. This has to be independent of local-fs.target -- that is
+          # the suspected-hanging target -- so the unit below deliberately
+          # does not order after it (or remote-fs.target/network.target).
+          cat > /usr/local/bin/mls-debug-dump.sh <<'DUMPSCRIPT'
+          #!/bin/sh
+          # Installed by mls-debug-dump.service (see unit below). Every
+          # ~4s, appends one timestamped snapshot straight to /dev/console
+          # so it survives even if the guest never becomes SSH-reachable
+          # again. Each diagnostic command is individually timeout-wrapped
+          # so a single command stuck in the kernel (e.g. a blocked udev
+          # ioctl) can never wedge the whole loop; Restart=always/
+          # RestartSec=1 in the unit is the last-resort backstop if the
+          # loop process itself dies anyway.
+          exec >>/dev/console 2>&1
+
+          first=1
+          while :; do
+              echo "=== mls-debug-dump @ $(timeout 3 date) ==="
+
+              if [ "$first" = 1 ]; then
+                  first=0
+                  # ONE-SHOT, first iteration only: udevadm monitor is a
+                  # blocking foreground stream, not a snapshot -- confirm
+                  # uevents are still flowing at all near boot, then never
+                  # run it again in this loop (the plain ps/systemctl
+                  # snapshot below is what repeats every iteration).
+                  echo "--- one-shot: udevadm monitor -u -k --property (bounded 8s) ---"
+                  timeout 8 udevadm monitor -u -k --property 2>&1
+                  echo "--- end one-shot udevadm monitor ---"
+              fi
+
+              echo "--- systemctl list-jobs ---"
+              timeout 3 systemctl list-jobs --no-pager 2>&1
+
+              echo "--- ps: udev/NetworkManager (pid ppid stat wchan cmd) ---"
+              ps_dump=$(timeout 3 ps -eo pid,ppid,stat,wchan:32,cmd 2>&1)
+              echo "$ps_dump" | grep -Ei 'udev|NetworkManager' || echo "(no matching udev/NetworkManager processes)"
+
+              echo "--- journalctl -k --no-pager -n 5 ---"
+              timeout 3 journalctl -k --no-pager -n 5 2>&1
+
+              echo "=== end snapshot ==="
+              sleep 4
+          done
+      DUMPSCRIPT
+          chmod +x /usr/local/bin/mls-debug-dump.sh
+
+          cat > /etc/systemd/system/mls-debug-dump.service <<'DUMPUNIT'
+          [Unit]
+          Description=Passive MLS enforcing-mode boot diagnostic dumper (writes snapshots to serial console)
+          Documentation=man:systemd.special(7)
+          # Modeled on systemd's own debug-shell.service: DefaultDependencies=no
+          # and IgnoreOnIsolate=yes so this keeps running through an isolate to
+          # rescue/emergency targets (exactly the failure mode this hang is
+          # expected to land in), After=sysinit.target so it starts as early as
+          # possible rather than waiting for multi-user.target (which may never
+          # be reached if the hang prevents it). Deliberately NOT ordered after
+          # local-fs.target/remote-fs.target/network.target: those are the
+          # suspected-hanging targets, and this unit's whole purpose is to keep
+          # running independent of them.
+          DefaultDependencies=no
+          IgnoreOnIsolate=yes
+          After=sysinit.target
+
+          [Service]
+          Type=simple
+          ExecStart=/usr/local/bin/mls-debug-dump.sh
+          Restart=always
+          RestartSec=1
+          KillMode=process
+
+          [Install]
+          WantedBy=sysinit.target
+      DUMPUNIT
+
+          # Enable only -- do NOT start now. This unit is diagnosing the
+          # *next* boot (the enforcing-mode one triggered by tmt-reboot
+          # below), not this still-permissive one.
+          systemctl enable mls-debug-dump.service
 
           cloud-init clean --logs
           sed -i 's/^SELINUX=.*/SELINUX=enforcing/' /etc/selinux/config
