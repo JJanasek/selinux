@@ -4,9 +4,16 @@ description: |
     SELinux policy to mls and boot to a working SSH session in enforcing mode,
     with cloud-init and networking functional.
 
-    Applies necessary workarounds for an unresolved udev/NetworkManager
-    MLS timing race (permissive marks + fstab tuning) and loads custom
-    policy modules to patch missing upstream MLS rules.
+    Marks udev_t/NetworkManager_t permissive and applies fstab/timeout
+    tuning to address a real, separately-evidenced AVC/permission gap for
+    those two domains (not a confirmed timing race -- no genuine hang
+    mechanism was ever directly observed for them), and loads custom
+    policy modules to patch missing upstream MLS rules. The plan's other
+    long-standing symptom -- the enforcing-mode reboot appearing to hang
+    or time out -- turned out to be fully explained by a separate,
+    unrelated gap (the `ssh_sysadm_login` boolean blocking any SSH exec
+    for root's sysadm_t session, which also broke tmt's own reboot
+    detection), now fixed below.
 
 prepare:
   - name: Install and configure MLS policy in Permissive mode
@@ -92,8 +99,12 @@ prepare:
           # nothing udev/NetworkManager-related beyond what rounds 1-7
           # already documented. Restoring the two domain-level marks below.
           #
-          # WORKAROUND: Mark timing-sensitive domains permissive.
-          # Disabling dontaudit ensures we catch any hidden AVCs.
+          # WORKAROUND: Mark udev_t/NetworkManager_t permissive to address
+          # a real AVC/permission gap for those two domains specifically
+          # (evidenced early in this investigation) -- not a confirmed
+          # timing race; no actual hang mechanism was ever directly
+          # observed for either domain. Disabling dontaudit ensures we
+          # catch any hidden AVCs.
           semanage permissive -n -a udev_t
           semanage permissive -n -a NetworkManager_t
 
@@ -121,7 +132,14 @@ prepare:
 
           semanage dontaudit off -N
 
-          # WORKAROUND: Mitigate udev MLS overhead timing race.
+          # WORKAROUND: defense-in-depth fstab tuning, added on suspicion of
+          # udev/MLS boot-timing overhead -- that suspicion was never
+          # actually confirmed (see ROUND 9 note below and the
+          # ssh_sysadm_login fix above, which fully explains the
+          # reboot-timeout symptom this was originally aimed at). Kept
+          # since resolving UUIDs to raw devices and extending
+          # local-fs.target's device timeout is cheap and harmless either
+          # way, not because a real timing race was ever pinned down.
           # Resolve fstab UUIDs to raw devices and extend timeouts to prevent local-fs.target collapse.
           cp /etc/fstab /etc/fstab.orig
           awk '!/^#/ && NF >= 4 && $3 != "swap" && $1 ~ /^UUID=/ { sub(/^UUID=/, "", $1); print $1 }' /etc/fstab.orig | sort -u | while read -r uuid; do
