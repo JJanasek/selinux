@@ -96,6 +96,29 @@ prepare:
           # Disabling dontaudit ensures we catch any hidden AVCs.
           semanage permissive -n -a udev_t
           semanage permissive -n -a NetworkManager_t
+
+          # REAL FIX (found via mls-fix-sysadm-permissive, a throwaway
+          # diagnostic branch that marked sysadm_t/sshd_t/sshd_session_t
+          # permissive just long enough to capture the actual denial --
+          # not carried over here): root's SSH session under MLS maps to
+          # sysadm_u/sysadm_r/sysadm_t (semanage login -l), but
+          # policy/modules/services/ssh.te gates sshd_session_t's ability
+          # to transition into any admin domain behind the tunable
+          # `ssh_sysadm_login` (off by default -- a deliberate hardening
+          # default, since most systems don't want SSH landing directly
+          # in the admin role). With it off, every post-reboot SSH command
+          # for root failed execve() with "avc: denied { transition } ...
+          # scontext=sshd_session_t tcontext=sysadm_t tclass=process",
+          # surfacing to the user as a flat "/bin/bash: Permission
+          # denied" -- audit.log's own audit2allow output named this
+          # boolean directly. This is not a udev/NetworkManager timing
+          # issue and not an MLS range/constraint problem (scontext and
+          # tcontext carry the identical s0-s15:c0.c1023 range); it is
+          # simply a missing runtime policy toggle for this MLS root-
+          # login setup. semanage persists to the policy store so this is
+          # in effect for the enforcing-mode boot below.
+          semanage boolean -n -m --on ssh_sysadm_login
+
           semanage dontaudit off -N
 
           # WORKAROUND: Mitigate udev MLS overhead timing race.
