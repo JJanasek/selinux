@@ -471,3 +471,39 @@ execute:
         exit 1
     fi
     echo "PASS: cloud-init reached 'done' and ran under cloud_init_t"
+
+    # FORENSICS (fallback per the pivot investigating mls-fix-udev-only-
+    # permissive's "/bin/bash: Permission denied" signature): that branch's
+    # own reboot into enforcing never completes far enough to reach this
+    # execute step at all, so its would-be evidence is unreachable directly.
+    # This branch (mls-fix, both domains permissive) DOES reach a stable,
+    # fully-booted, SSH-reachable enforcing-mode state -- check here whether
+    # the same denial class exists but stays latent/permissive-logged rather
+    # than enforced, which would mean it's present on both branches and just
+    # not yet fatal on this one.
+    echo "=== FORENSICS: comm=bash or comm=sshd AVCs this boot ==="
+    ausearch -m AVC,USER_AVC -ts "$boot_date" "$boot_time" 2>/dev/null | grep -Ei 'comm="(bash|sshd|login|sshd-session)"' || echo "none"
+
+    echo "=== FORENSICS: process class transition/dyntransition/entrypoint/noatsecure denials this boot ==="
+    ausearch -m AVC,USER_AVC -ts "$boot_date" "$boot_time" 2>/dev/null | grep -Ei 'class=process.*(transition|dyntransition|entrypoint|noatsecure|rlimitinh|siginh)' || echo "none"
+
+    echo "=== FORENSICS: file-class execute/execute_no_trans/entrypoint denials on bin_t/shell_exec_t this boot ==="
+    ausearch -m AVC,USER_AVC -ts "$boot_date" "$boot_time" 2>/dev/null | grep -Ei 'class=file.*(execute|entrypoint)' || echo "none"
+
+    echo "=== FORENSICS: full raw AVC/USER_AVC dump this boot (unfiltered, for anything the greps above miss) ==="
+    ausearch -m AVC,USER_AVC -ts "$boot_date" "$boot_time" 2>&1 || echo "no AVCs this boot"
+
+    echo "=== FORENSICS: semanage login -l (confirm root's actual SELinux user mapping) ==="
+    semanage login -l 2>&1 || echo "semanage login -l failed"
+
+    echo "=== FORENSICS: id -Z for this execute step's own login session (sshd->shell transition already happened to get here) ==="
+    id -Z 2>&1 || echo "id -Z failed"
+
+    echo "=== FORENSICS: /bin/bash and /usr/bin/bash file contexts ==="
+    ls -laZ /bin/bash /usr/bin/bash 2>&1 || echo "ls -laZ failed"
+
+    echo "=== FORENSICS: sesearch -- sysadm_r/sysadm_t executing bin_t/shell_exec_t (TE rules only, not MLS constraints) ==="
+    (sesearch -A -s sysadm_t -t bin_t -c file 2>&1; sesearch -A -s sysadm_t -t shell_exec_t -c file 2>&1) || echo "sesearch unavailable/failed"
+
+    echo "=== FORENSICS: sesearch -- sshd_t process transition/dyntransition into sysadm_t ==="
+    (sesearch -A -s sshd_t -t sysadm_t -c process 2>&1) || echo "sesearch unavailable/failed"
