@@ -6,11 +6,11 @@ description: |
 
     This is the minimal, production version of the fix set developed in
     tmt/mls.fmf (same directory) -- it keeps only what's actually needed
-    for a passing run: the two real policy fixes (udev_t/NetworkManager_t
-    permissive marks, and enabling the ssh_sysadm_login boolean so root's
-    SSH session can actually reach sysadm_t), the custom policy modules,
-    and the cloud-init/reboot mechanics. All of the diagnostic scaffolding
-    that was needed to *find* those fixes (the serial-console dumper,
+    for a passing run: the two real policy fixes (the udev_t permissive
+    mark, and enabling the ssh_sysadm_login boolean so root's SSH session
+    can actually reach sysadm_t), the custom policy modules, and the
+    cloud-init/reboot mechanics. All of the diagnostic scaffolding that
+    was needed to *find* those fixes (the serial-console dumper,
     exhaustive AVC/sesearch forensics, debug-verbosity boot args, the
     chronological "ROUND N" investigation notes) has been dropped here;
     see tmt/mls.fmf's git history for that full story.
@@ -79,16 +79,48 @@ prepare:
           rm -f /.autorelabel
           systemctl mask selinux-autorelabel.service
 
-          # Empirically required: a dedicated bisection test that removed
-          # only these two marks (ssh_sysadm_login on, fstab tuning kept)
-          # reproduced a full boot hang (no SSH, no network reachability
-          # at all for 10+ min) -- yet 8 rounds of AVC auditing, including
-          # with dontaudit off, never caught a denial explaining why.
-          # Mechanism not understood: possibly a race/timing effect, or
-          # something outside what audit records. Keep as a pair; only
-          # tested/confirmed together, not individually.
+          # Empirically required. Multiple dedicated bisection tests
+          # removing this mark (and, historically, the NetworkManager_t
+          # mark alongside it) reproduced a real boot failure every time
+          # (ssh_sysadm_login on; with or without fstab tuning): console
+          # evidence shows systemd's device units for the root/EFI
+          # partitions (dev-disk-by-uuid/*) and NetworkManager-wait-online
+          # repeatedly failing to become ready within their normal
+          # timeouts (default 45s, or even an extended 90s), collapsing
+          # local-fs.target -> emergency.target so fast (~49s from boot)
+          # that even the earliest possible (DefaultDependencies=no,
+          # After=sysinit.target) diagnostic unit gets torn down before
+          # printing a single line. So this is not a classic CPU-spin or
+          # single blocking syscall an AVC sweep would catch -- it looks
+          # like udev-mediated device-node/symlink creation itself is
+          # being delayed or blocked under MLS enforcing without this
+          # mark. Still, 8+ rounds of AVC auditing (dontaudit off
+          # included) never caught the specific denial, so the exact
+          # mechanism remains unconfirmed.
+          #
+          # NetworkManager_t was marked permissive alongside udev_t for
+          # most of this investigation, documented as "only tested
+          # together, not individually." Branch mls-fix-udev-only-isolated
+          # finally isolated it: udev_t permissive alone, with
+          # NetworkManager_t left fully enforcing, was tested on 5
+          # independent fresh VMs (1minutetip, Fedora 44) using this same
+          # prepare/execute flow. 4/5 booted cleanly in well under a
+          # minute each, reaching multi-user.target with cloud-init done
+          # under cloud_init_t, SSH stable, and NetworkManager_t confirmed
+          # still enforcing throughout (semanage permissive -l checked
+          # live and captured in the execute step's own output). The one
+          # non-clean run left the root filesystem stuck read-only with
+          # auditd/cloud-init-main/rngd failing to start -- but SSH still
+          # worked, and the boot's own journal showed "watchdog0: watchdog
+          # did not stop!" on the *preceding* reboot, i.e. a hardware
+          # watchdog/reboot-mechanics glitch on that specific 1minutetip
+          # instance, not the local-fs.target/emergency.target collapse
+          # pattern above, and not any udev_t/NetworkManager_t AVC. That
+          # run is treated as an unrelated infra flake, not a policy
+          # result. Conclusion: the NetworkManager_t mark was never
+          # actually load-bearing on its own; udev_t alone is sufficient,
+          # so it has been dropped here.
           semanage permissive -n -a udev_t
-          semanage permissive -n -a NetworkManager_t
 
           # THE fix: root's SSH session maps to sysadm_u/sysadm_r/sysadm_t
           # (semanage login -l), but sshd_session_t's ability to
@@ -169,7 +201,13 @@ execute:
     # over this alone.
     boot_date=$(date -d "$(uptime -s) - 60 seconds" '+%m/%d/%Y' 2>/dev/null || echo today)
     boot_time=$(date -d "$(uptime -s) - 60 seconds" '+%H:%M:%S' 2>/dev/null || echo 00:00:00)
-    avc_dump=$(ausearch -m AVC,USER_AVC -ts "$boot_date" "$boot_time" 2>/dev/null)
+    # --input-logs: ausearch silently reads stdin instead of the real audit
+    # logs whenever stdin isn't a genuine TTY (true for this non-interactive
+    # tmt execute step), returning "<no matches>"/exit 0 with no warning --
+    # live-reproduced on both MLS and plain targeted Fedora 44 with real,
+    # confirmed-via-raw-grep AVCs sitting unseen in audit.log. See tmt/mls.fmf
+    # (same directory) for the full writeup.
+    avc_dump=$(ausearch -m AVC,USER_AVC --input-logs -ts "$boot_date" "$boot_time" 2>/dev/null)
     avc_count=$(echo "$avc_dump" | grep -c '^type=AVC\|^type=USER_AVC')
     echo "=== AVC/USER_AVC denials this boot: $avc_count (informational only) ==="
     [ "$avc_count" -gt 0 ] && echo "$avc_dump"
