@@ -7,3 +7,13 @@ gen_require(`
 ')
 
 allow udev_t self:capability sys_ptrace;
+
+# domain_transition_pattern (misc_patterns.spt) does not grant these under
+# MLS. initrc_t reaches udev_t via the generic "daemon" attribute transition
+# in init.te, which grants process:transition but not noatsecure/rlimitinh/
+# siginh.
+gen_require(`
+	type initrc_t;
+')
+
+allow initrc_t udev_t:process { noatsecure rlimitinh siginh };

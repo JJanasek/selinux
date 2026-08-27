@@ -1,0 +1,13 @@
+policy_module(inittransition, 1.0.0)
+
+# domain_transition_pattern (misc_patterns.spt) does not grant these under
+# MLS. init_t transitions directly to initrc_t (e.g. a systemd unit's
+# ExecStart=/bin/sh with no specific SELinux domain of its own) without
+# going through the generic "daemon" attribute rules in init.te, so none of
+# noatsecure/rlimitinh/siginh are granted for this specific transition
+# either.
+gen_require(`
+	type init_t, initrc_t;
+')
+
+allow init_t initrc_t:process { noatsecure rlimitinh siginh };
