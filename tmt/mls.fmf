@@ -350,7 +350,21 @@ prepare:
       # harmless and still guards against any genuine clock-domain gap.
       boot_date=$(date -d "$(uptime -s) - 60 seconds" '+%m/%d/%Y' 2>/dev/null || echo today)
       boot_time=$(date -d "$(uptime -s) - 60 seconds" '+%H:%M:%S' 2>/dev/null || echo 00:00:00)
-      avc_dump=$(ausearch -m AVC,USER_AVC -ts "$boot_date" "$boot_time" 2>&1) || avc_dump="(ausearch found no records for this boot)"
+      # SECOND ausearch invocation bug, found after the -ts arg-splitting one
+      # above: ausearch silently reads stdin instead of the real logs
+      # whenever stdin isn't a genuine TTY -- which is exactly what every
+      # non-interactive tmt/SSH execute step provides. It then prints
+      # "<no matches>" with exit 0, giving zero indication anything went
+      # wrong. Confirmed live on both an MLS-enforcing and a plain targeted
+      # Fedora 44 box: real, confirmed-via-raw-grep AVCs in audit.log, yet
+      # a script-invoked "ausearch -m AVC ..." with no explicit input
+      # source returned "<no matches>" every time; adding --input-logs (or
+      # redirecting stdin from /dev/null) immediately found them. This means
+      # every "$avc_dump"-based check in this plan before this fix was
+      # potentially blind, independent of (and in addition to) the -ts
+      # bug already fixed above. --input-logs forces ausearch to use the
+      # actual configured logs regardless of what stdin looks like.
+      avc_dump=$(ausearch -m AVC,USER_AVC --input-logs -ts "$boot_date" "$boot_time" 2>&1) || avc_dump="(ausearch found no records for this boot)"
       echo "$avc_dump"
 
       echo "=== any AVCs naming udev_t or NetworkManager_t specifically ==="
@@ -481,10 +495,15 @@ execute:
     # `uptime -s`-derived boundary.
     boot_date=$(date -d "$(uptime -s) - 60 seconds" '+%m/%d/%Y' 2>/dev/null || echo today)
     boot_time=$(date -d "$(uptime -s) - 60 seconds" '+%H:%M:%S' 2>/dev/null || echo 00:00:00)
-    ausearch -m AVC -ts "$boot_date" "$boot_time" 2>/dev/null | audit2allow || true
+    # --input-logs everywhere below: ausearch silently switches to reading
+    # stdin instead of the real audit logs whenever stdin isn't a TTY (true
+    # for every tmt/SSH execute step here), printing "<no matches>"/exit 0
+    # with no warning. See the prepare step's verify script for the full
+    # writeup and live reproduction of this on both MLS and targeted boxes.
+    ausearch -m AVC --input-logs -ts "$boot_date" "$boot_time" 2>/dev/null | audit2allow || true
 
     echo "=== any AVCs naming cloud_init_t specifically (raw, in case audit2allow above choked) ==="
-    ausearch -m AVC -ts "$boot_date" "$boot_time" 2>/dev/null | grep -i cloud_init_t || echo "none"
+    ausearch -m AVC --input-logs -ts "$boot_date" "$boot_time" 2>/dev/null | grep -i cloud_init_t || echo "none"
 
     # REAL VERIFICATION: unlike everything above, this is not `|| true`.
     # Whether cloud-init actually finished under cloud_init_t is the
@@ -523,13 +542,13 @@ execute:
     # than enforced, which would mean it's present on both branches and just
     # not yet fatal on this one.
     echo "=== FORENSICS: comm=bash or comm=sshd AVCs this boot (any class/permission) ==="
-    ausearch -m AVC,USER_AVC -ts "$boot_date" "$boot_time" 2>/dev/null | grep -Ei 'comm="(bash|sshd|login|sshd-session)"' || echo "none"
+    ausearch -m AVC,USER_AVC --input-logs -ts "$boot_date" "$boot_time" 2>/dev/null | grep -Ei 'comm="(bash|sshd|login|sshd-session)"' || echo "none"
 
     echo "=== FORENSICS: process class transition/dyntransition/entrypoint/noatsecure denials this boot ==="
-    ausearch -m AVC,USER_AVC -ts "$boot_date" "$boot_time" 2>/dev/null | grep -Ei 'class=process.*(transition|dyntransition|entrypoint|noatsecure|rlimitinh|siginh)' || echo "none"
+    ausearch -m AVC,USER_AVC --input-logs -ts "$boot_date" "$boot_time" 2>/dev/null | grep -Ei 'class=process.*(transition|dyntransition|entrypoint|noatsecure|rlimitinh|siginh)' || echo "none"
 
     echo "=== FORENSICS: file-class execute/execute_no_trans/entrypoint denials on bin_t/shell_exec_t this boot ==="
-    ausearch -m AVC,USER_AVC -ts "$boot_date" "$boot_time" 2>/dev/null | grep -Ei 'class=file.*(execute|entrypoint)' || echo "none"
+    ausearch -m AVC,USER_AVC --input-logs -ts "$boot_date" "$boot_time" 2>/dev/null | grep -Ei 'class=file.*(execute|entrypoint)' || echo "none"
 
     # FORENSICS (pipe/fd handoff theory): sshd-session hands a login shell
     # its stdin/stdout pipes, then dyntransitions the process into the
@@ -549,19 +568,19 @@ execute:
     # denial is plausible but not a proven match for that exact string.
     # Check for it directly rather than reason about it further.
     echo "=== FORENSICS: class=fd denials this boot (pipe/fd handoff theory) ==="
-    ausearch -m AVC,USER_AVC -ts "$boot_date" "$boot_time" 2>/dev/null | grep -Ei 'class=fd\b' || echo "none"
+    ausearch -m AVC,USER_AVC --input-logs -ts "$boot_date" "$boot_time" 2>/dev/null | grep -Ei 'class=fd\b' || echo "none"
 
     echo "=== FORENSICS: class=fifo_file denials this boot ==="
-    ausearch -m AVC,USER_AVC -ts "$boot_date" "$boot_time" 2>/dev/null | grep -Ei 'class=fifo_file\b' || echo "none"
+    ausearch -m AVC,USER_AVC --input-logs -ts "$boot_date" "$boot_time" 2>/dev/null | grep -Ei 'class=fifo_file\b' || echo "none"
 
     echo "=== FORENSICS: class=unix_stream_socket or unix_dgram_socket denials this boot ==="
-    ausearch -m AVC,USER_AVC -ts "$boot_date" "$boot_time" 2>/dev/null | grep -Ei 'class=unix_(stream|dgram)_socket\b' || echo "none"
+    ausearch -m AVC,USER_AVC --input-logs -ts "$boot_date" "$boot_time" 2>/dev/null | grep -Ei 'class=unix_(stream|dgram)_socket\b' || echo "none"
 
     echo "=== FORENSICS: class=capability denials this boot ==="
-    ausearch -m AVC,USER_AVC -ts "$boot_date" "$boot_time" 2>/dev/null | grep -Ei 'class=capability\b' || echo "none"
+    ausearch -m AVC,USER_AVC --input-logs -ts "$boot_date" "$boot_time" 2>/dev/null | grep -Ei 'class=capability\b' || echo "none"
 
     echo "=== FORENSICS: full raw AVC/USER_AVC dump this boot (unfiltered, for anything the greps above miss) ==="
-    ausearch -m AVC,USER_AVC -ts "$boot_date" "$boot_time" 2>&1 || echo "no AVCs this boot"
+    ausearch -m AVC,USER_AVC --input-logs -ts "$boot_date" "$boot_time" 2>&1 || echo "no AVCs this boot"
 
     echo "=== FORENSICS: semanage login -l (confirm root's actual SELinux user mapping) ==="
     semanage login -l 2>&1 || echo "semanage login -l failed"
