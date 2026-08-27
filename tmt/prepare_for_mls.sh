@@ -62,6 +62,27 @@
 # it, or that run each step as its own separate tmt prepare phase (a
 # reboot tears down the running script, so anything meant to run after it
 # has to live in a call/step that only actually executes post-reboot).
+#
+# HAZARD, found the hard way while manually driving these steps over
+# separate SSH connections (not an issue for tmt's own execute steps,
+# which run this whole prepare script -- including the reboot -- as one
+# continuous session): as soon as prepare_for_mls_configure returns,
+# SELINUXTYPE already says mls and root is mapped to sysadm_u in that
+# (not-yet-active) store, but the kernel is still enforcing the OLD
+# (typically targeted) policy. Any *new* login session opened in that
+# window has PAM/pam_selinux compute a target context (sysadm_u:
+# sysadm_r:sysadm_t:...) from the mls store, then ask the still-old
+# kernel policy to allow it -- which it can't, since that context/role
+# doesn't mean the same thing (or exist at all) there. Every new SSH
+# connection then fails immediately with a bare "/bin/bash: Permission
+# denied" (confirmed: even sftp/internal-sftp fails the same way, and the
+# box never recovers on its own since nothing will trigger the reboot
+# that would fix it). Existing, already-established sessions are
+# unaffected and keep working fine. If driving this by hand: run
+# prepare_for_mls_configure and the actual reboot in the SAME
+# uninterrupted session (script everything, including staging extra
+# policy modules, up to and including the reboot call itself, as one
+# ssh invocation) rather than reconnecting in between.
 
 prepare_for_mls_configure() {
     # SELINUXTYPE must flip to mls before the login mapping below: semanage
