@@ -2,229 +2,27 @@ summary: MLS Enforcing-Mode Boot Validation (minimal)
 description: |
     Switches a Fedora guest from the default targeted SELinux policy to
     mls and validates a working, SELinux-enforcing boot with cloud-init
-    and networking functional.
-
-    This is the minimal, production version of the fix set developed in
-    tmt/mls.fmf (same directory) -- it keeps only what's actually needed
-    for a passing run: the two real policy fixes (five narrowly-targeted
-    udev_t policy modules, see below, and enabling the ssh_sysadm_login
-    boolean so root's SSH session can actually reach sysadm_t), the
-    custom policy modules, and the cloud-init/reboot mechanics. All of
-    the diagnostic scaffolding that was needed to *find* those fixes (the
-    serial-console dumper, exhaustive AVC/sesearch forensics,
-    debug-verbosity boot args, the chronological "ROUND N" investigation
-    notes) has been dropped here; see tmt/mls.fmf's git history for that
-    full story.
-
-    UPDATE: the blanket `semanage permissive -n -a udev_t` workaround that
-    used to live here has been replaced by five narrowly-targeted policy
-    modules (tmt/mls-udev-{nsfs,rlimit,cgroup,kobjectuevent,tmpfs}-fix/),
-    each granting exactly the one or two permissions an AVC denial showed
-    were actually missing. This was discovered and independently
-    confirmed three times on Testing Farm (requests
-    ed7f40c9-dfef-4a92-920f-a95fc24eecfa,
-    6a891543-231d-412e-a5bd-195fd4243737, and
-    2add39f3-3b61-49ca-abae-263907fd00d6) on branch
-    mls-hang-nsfs-fix-round3 (commits b2c5d7ee/973b4a7b, built on
-    mls-hang-nsfs-fix-round2/cfa3f10b and mls-hang-nsfs-fix/
-    70c0ff6a+c505c8ec): with all five modules loaded, udev_t AND
-    NetworkManager_t both stay fully enforcing (no permissive marks
-    anywhere) and the boot still succeeds -- 0 failed units,
-    systemd-udevd and NetworkManager running cleanly, ens5 gets a DHCP
-    address, no tmt-reboot timeout, zero AVC denials for udev_t/
-    NetworkManager_t across the whole boot. See each module's own .te
-    comment block for the exact AVC record that justifies it.
+    and networking functional. This is the minimal, production version
+    of the fix set developed in tmt/mls.fmf (same directory); see that
+    file's git history for the full investigation behind these fixes.
 
 prepare:
   - name: Install and configure MLS policy in Permissive mode
     how: shell
-    script: |
-      dnf install -y selinux-policy-mls policycoreutils-python-utils audit
-
-      source $TMT_TREE/tmt/prepare_for_mls.sh
-      prepare_for_mls_configure
-
-      # Stay permissive for the initial relabel reboot
-      sed -i 's/^SELINUX=.*/SELINUX=permissive/' /etc/selinux/config
-
-      # Preserve SSH host keys across reboots to maintain tmt connection
-      mkdir -p /etc/cloud/cloud.cfg.d
-      echo 'ssh_deletekeys: false' > /etc/cloud/cloud.cfg.d/99-preserve-ssh-host-keys.cfg
-
-      # Capture the SELinux context cloud-init actually runs under via a
-      # bootcmd subprocess (inherits cloud-init's live domain with no exec
-      # transition of its own) -- cloud-init-main.service is short-lived
-      # and often gone before the execute step reconnects, so this is the
-      # only non-racy way to confirm it ran under cloud_init_t.
-      cat > /etc/cloud/cloud.cfg.d/98-selinux-context-check.cfg <<'CICFG'
-      bootcmd:
-        - [ sh, -c, "id -Z > /var/log/cloud-init-selinux-context.log 2>&1" ]
-      CICFG
-
-      # Reset cloud-init state to force a full run under MLS
-      cloud-init clean --logs
+    script: $TMT_TREE/tmt/mls-final-prepare-1-mls-permissive.sh
 
   - name: Build and load cloud-init, sshd-session-pipes, and udev_t policy fixes
     how: shell
-    script: |
-      dnf install -y policycoreutils-devel
-
-      # Stage missing interface files
-      cp $TMT_TREE/tmt/mls-cloudinit-fix/networkmanager-manage-rw-conf.if /usr/share/selinux/devel/include/contrib/
-      cp $TMT_TREE/tmt/mls-cloudinit-fix/ssh-read-server-keys.if /usr/share/selinux/devel/include/contrib/
-      cp $TMT_TREE/tmt/mls-cloudinit-fix/sysnetwork-manage-config-sockets.if /usr/share/selinux/devel/include/system/
-
-      mkdir -p /root/build && cd /root/build
-      cp $TMT_TREE/tmt/mls-cloudinit-fix/cloudform.* .
-      cp $TMT_TREE/tmt/mls-ssh-pipes-fix/mlssshpipes.te .
-      cp $TMT_TREE/tmt/mls-udev-ptrace-fix/udevptrace.te .
-
-      # The five modules that replace the old blanket udev_t permissive
-      # mark (see this file's description above and each module's own
-      # .te comment block for the exact AVC each one closes; discovered
-      # on branch mls-hang-nsfs-fix-round3, empirically confirmed by 3
-      # independent Testing Farm runs with udev_t left fully enforcing).
-      cp $TMT_TREE/tmt/mls-udev-nsfs-fix/udevnsfs.te .
-      cp $TMT_TREE/tmt/mls-udev-rlimit-fix/udevrlimit.te .
-      cp $TMT_TREE/tmt/mls-udev-cgroup-fix/udevcgroup.te .
-      cp $TMT_TREE/tmt/mls-udev-kobjectuevent-fix/udevkobjectuevent.te .
-      cp $TMT_TREE/tmt/mls-udev-tmpfs-fix/udevtmpfs.te .
-
-      make -f /usr/share/selinux/devel/Makefile cloudform.pp mlssshpipes.pp udevptrace.pp udevnsfs.pp udevrlimit.pp udevcgroup.pp udevkobjectuevent.pp udevtmpfs.pp
-
-      # Load modules into the inactive MLS store (-n) without hot-reloading
-      semodule -n -i cloudform.pp mlssshpipes.pp udevptrace.pp udevnsfs.pp udevrlimit.pp udevcgroup.pp udevkobjectuevent.pp udevtmpfs.pp
-      semodule -l | grep -E '^(cloudform|mlssshpipes|udevptrace|udevnsfs|udevrlimit|udevcgroup|udevkobjectuevent|udevtmpfs)\b'
+    script: $TMT_TREE/tmt/mls-final-prepare-2-build-modules.sh
 
   - name: Reboot to apply MLS and relabel
     how: shell
-    script: |
-      source $TMT_TREE/tmt/prepare_for_mls.sh
-      prepare_for_mls_reboot
-      prepare_for_mls_force_relabel
+    script: $TMT_TREE/tmt/mls-final-prepare-3-reboot-relabel.sh
 
   - name: Switch to Enforcing and reboot again
     how: shell
-    script: |
-      if [ "${TMT_REBOOT_COUNT:-0}" -eq 0 ]; then
-          rm -f /.autorelabel
-          systemctl mask selinux-autorelabel.service
-
-          # HISTORY: this used to be `semanage permissive -n -a udev_t`,
-          # a blanket permissive mark empirically required to avoid a
-          # real boot failure (systemd's device units for the root/EFI
-          # partitions and NetworkManager-wait-online repeatedly failing
-          # to become ready in time, collapsing local-fs.target into
-          # emergency.target within ~49s of boot -- see this file's git
-          # history, and tmt/mls.fmf's, for the full multi-round
-          # investigation). NetworkManager_t was marked permissive
-          # alongside it for most of that investigation, then dropped
-          # once branch mls-fix-udev-only-isolated confirmed udev_t alone
-          # was sufficient.
-          #
-          # That blanket mark has now been replaced by the five targeted
-          # policy modules built and loaded above
-          # (mls-udev-{nsfs,rlimit,cgroup,kobjectuevent,tmpfs}-fix/), each
-          # granting exactly the permission(s) an actual AVC denial
-          # showed were missing from udev_t. This was found on branch
-          # mls-hang-nsfs-fix-round3 (commits b2c5d7ee/973b4a7b, building
-          # on mls-hang-nsfs-fix-round2/cfa3f10b and mls-hang-nsfs-fix/
-          # 70c0ff6a+c505c8ec) and independently confirmed on 3 separate
-          # Testing Farm runs (ed7f40c9-dfef-4a92-920f-a95fc24eecfa,
-          # 6a891543-231d-412e-a5bd-195fd4243737,
-          # 2add39f3-3b61-49ca-abae-263907fd00d6): udev_t AND
-          # NetworkManager_t both stayed fully enforcing throughout, with
-          # 0 failed units, ens5 getting a DHCP address, no tmt-reboot
-          # timeout, and zero AVC denials for either domain across the
-          # whole boot. No permissive mark of any kind is needed here
-          # anymore.
-
-          # THE fix: root's SSH session maps to sysadm_u/sysadm_r/sysadm_t
-          # (semanage login -l), but sshd_session_t's ability to
-          # transition into any admin domain is gated behind this tunable
-          # (off by default). Without it, every post-reboot SSH command
-          # fails execve() with a denied process "transition" AVC,
-          # surfacing to users as a flat "/bin/bash: Permission denied" --
-          # and, since tmt's own reboot-detection also runs over SSH, this
-          # alone was enough to make the enforcing-mode reboot look like
-          # it hung. See tmt/mls.fmf's git history for the full
-          # investigation that found this.
-          semanage boolean -n -m --on ssh_sysadm_login
-
-          # (fstab UUID->device rewrite + nofail,device-timeout tuning was
-          # tested and removed: a dedicated run with both marks above kept
-          # and this tuning entirely absent booted cleanly in ~24s with
-          # NetworkManager/systemd-udevd active and zero AVCs. It was
-          # speculative boot-timing scaffolding with no evidence behind
-          # it, unlike the two marks above.)
-
-          # Defense-in-depth alongside the real fix in cloudform.te:
-          # cloud-init.target ships with no static [Install] section, so
-          # give it a static symlink in case the generator's own runtime
-          # enablement doesn't run.
-          mkdir -p /etc/systemd/system/multi-user.target.wants
-          ln -sf /usr/lib/systemd/system/cloud-init.target /etc/systemd/system/multi-user.target.wants/cloud-init.target
-
-          # Rebuild the policy store now so the boolean change above is
-          # baked into what the reboot below actually loads. (dontaudit
-          # is left at its default -- on -- to keep production audit logs
-          # quiet; nothing in this minimal plan depends on seeing
-          # dontaudited denials.)
-          semodule -DB
-
-          cloud-init clean --logs
-          sed -i 's/^SELINUX=.*/SELINUX=enforcing/' /etc/selinux/config
-          tmt-reboot -t 1200
-      fi
+    script: $TMT_TREE/tmt/mls-final-prepare-4-enforcing.sh
 
 execute:
   how: tmt
-  script: |
-    echo "=== SELinux status ==="
-    sestatus
-
-    echo "=== waiting (up to 120s) for cloud-init to finish ==="
-    timeout 120 cloud-init status --wait || true
-
-    long_status=$(cloud-init status --long) || true
-    final_status=$(echo "$long_status" | awk -F': ' '/^status:/ {print $2}')
-    echo "=== cloud-init final status: $final_status ==="
-
-    # REAL VERIFICATION #1: cloud-init must actually finish. A tmt
-    # "passed" verdict should mean that happened, not just that this
-    # script ran without crashing.
-    if [ "$final_status" != "done" ]; then
-        echo "FAIL: cloud-init did not reach 'done' (got: '$final_status')"
-        exit 1
-    fi
-
-    # REAL VERIFICATION #2: confirm it ran under cloud_init_t, via the
-    # bootcmd-captured id -Z from prepare (see 98-selinux-context-check.cfg)
-    # -- cloud-init-main.service is too short-lived to catch with ps -eZ
-    # after the fact.
-    context_log=$(cat /var/log/cloud-init-selinux-context.log 2>&1) || true
-    echo "=== cloud-init's own SELinux context (captured via bootcmd): $context_log ==="
-    if ! echo "$context_log" | grep -q cloud_init_t; then
-        echo "FAIL: cloud-init reported done, but no evidence it ever ran under cloud_init_t"
-        exit 1
-    fi
-    echo "PASS: cloud-init reached 'done' and ran under cloud_init_t"
-
-    # Lightweight regression tripwire (not exhaustive forensics, and not
-    # part of the pass/fail gate -- some non-blocking denials, e.g. minor
-    # process:{noatsecure,siginh} on the sshd auth helper chain, are
-    # expected and harmless even on a fully working boot). Report the
-    # count and full dump so a human can review; a plan run isn't failed
-    # over this alone.
-    boot_date=$(date -d "$(uptime -s) - 60 seconds" '+%m/%d/%Y' 2>/dev/null || echo today)
-    boot_time=$(date -d "$(uptime -s) - 60 seconds" '+%H:%M:%S' 2>/dev/null || echo 00:00:00)
-    # --input-logs: ausearch silently reads stdin instead of the real audit
-    # logs whenever stdin isn't a genuine TTY (true for this non-interactive
-    # tmt execute step), returning "<no matches>"/exit 0 with no warning --
-    # live-reproduced on both MLS and plain targeted Fedora 44 with real,
-    # confirmed-via-raw-grep AVCs sitting unseen in audit.log. See tmt/mls.fmf
-    # (same directory) for the full writeup.
-    avc_dump=$(ausearch -m AVC,USER_AVC --input-logs -ts "$boot_date" "$boot_time" 2>/dev/null)
-    avc_count=$(echo "$avc_dump" | grep -c '^type=AVC\|^type=USER_AVC')
-    echo "=== AVC/USER_AVC denials this boot: $avc_count (informational only) ==="
-    [ "$avc_count" -gt 0 ] && echo "$avc_dump"
+  script: $TMT_TREE/tmt/mls-final-execute.sh
