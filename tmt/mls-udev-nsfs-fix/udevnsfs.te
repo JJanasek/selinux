@@ -1,0 +1,95 @@
+policy_module(udevnsfs, 1.0.0)
+
+# When systemd-udevd forks a worker to process a uevent, sd-device-monitor
+# tries to determine whether it is running in the host network namespace
+# by calling ioctl(SIOCGSKNS, ...) on its own udev netlink socket. Servicing
+# that ioctl makes the kernel open an nsfs inode for the CALLER's own
+# network namespace (net:[<inum>], the same anonymous-inode filesystem
+# behind /proc/self/ns/net) via __ns_get_path()/dentry_open(), which is
+# permission-checked as a plain file open against that inode's actual
+# label -- the generic nsfs_t type from kernel/filesystem.te, not against
+# udev_t itself (so this is *not* a self: rule, even though the namespace
+# being opened is udev_t's own).
+#
+# Denial confirmed directly from systemd-udevd's own native-journal trace
+# (journalctl _COMM=systemd-udevd -b0 -- invisible to journalctl -k/dmesg
+# because auditd running suppresses the kmsg echo of AVCs it has already
+# delivered via the audit netlink transport), captured on branch
+# mls-hang-dmesg-enforcing-full commit 4375d126, Testing Farm request
+# c8dd6e82-28af-4148-b1ca-ee55a90be8b0:
+#
+#   audit[589]: AVC avc:  denied  { read open } for  pid=589
+#     comm="systemd-udevd" path="net:[4026531833]" dev="nsfs" ino=4026531833
+#     scontext=system_u:system_r:udev_t:s0-s15:c0.c1023
+#     tcontext=system_u:object_r:nsfs_t:s0 tclass=file permissive=0
+#   audit[589]: SYSCALL arch=c000003e syscall=16(ioctl) success=no exit=-13(EACCES)
+#     a1=894c(SIOCGSKNS) ... comm="systemd-udevd" exe="/usr/bin/udevadm"
+#     subj=system_u:system_r:udev_t:s0-s15:c0.c1023
+#   systemd-udevd[589]: sd-device-monitor(n/a): Unable to get network
+#     namespace of udev netlink socket, unable to determine if we are in
+#     host netns, ignoring: Permission denied
+#
+# udevd logs this as a non-fatal "ignoring" and does not crash or loop, but
+# the working hypothesis under test is that the resulting "netns unknown"
+# state makes udevd fall back to conservative handling specifically for
+# NETWORK-type devices (matching the well-known systemd/udev pattern of not
+# renaming/fully processing an interface it can't confirm is in the host
+# netns) -- while disk/storage devices, which never consult netns, are
+# unaffected. This exactly matches this investigation's observed symptom:
+# zram/disk-by-uuid device units succeed while ens5 (and even `lo`) never
+# get network configuration under a fully enforcing udev_t.
+#
+# Minimal, targeted grant: exactly the two permissions actually denied
+# above, nothing broader. This is the same access several other
+# network-aware daemons already have for the identical netns-checking
+# purpose in the upstream selinux-policy fork this investigation tracks
+# (NetworkManager_t, systemd_networkd_t, ifconfig_t, init_t, sysadm_t, ...
+# all carry fs_read_nsfs_files(), policy/modules/kernel/filesystem.if,
+# which itself expands to `allow $1 nsfs_t:file read_file_perms;` -- a
+# superset including getattr/ioctl/lock -- so udev_t just never had this
+# yet) -- confirming this is an established, low-risk pattern, not a novel
+# grant invented for this fix.
+#
+# ROUND 2 (branch mls-hang-nsfs-fix-round2, built on mls-hang-nsfs-fix
+# commits 70c0ff6a/c505c8ec, Testing Farm request
+# d8cb729e-fa01-48cc-8e6b-ba33088a2746): granting only { read open } above
+# was NOT enough -- it let the ioctl(SIOCGSKNS) open succeed, but exposed
+# the very next syscall in the same code path, fstat()/fstatat() on the
+# returned fd, which needs its own `getattr` check against the identical
+# nsfs_t label. Confirmed directly from the daemon's own crash-loop AVCs
+# (PID 650/680/689/691, t~=7.2-7.4s):
+#
+#   avc: denied { getattr } for pid=650 comm="systemd-udevd"
+#     path="net:[4026531833]" dev="nsfs" ino=4026531833
+#     scontext=system_u:system_r:udev_t:s0-s15:c0.c1023
+#     tcontext=system_u:object_r:nsfs_t:s0 tclass=file permissive=0
+#
+# and, same check pattern, a SECOND nsfs inode -- the PID namespace, not
+# the network one -- also only reachable now that the { read open } denial
+# from round 1 stopped short-circuiting the code path:
+#
+#   avc: denied { getattr } for pid=650 comm="systemd-udevd"
+#     path="pid:[4026531836]" dev="nsfs" ino=4026531836
+#     scontext=system_u:system_r:udev_t:s0-s15:c0.c1023
+#     tcontext=system_u:object_r:nsfs_t:s0 tclass=file permissive=0
+#
+# Both share tcontext=nsfs_t (the one generic nsfs filesystem type --
+# policy does not distinguish namespace kinds at the type level, only by
+# inode), so one added `getattr` permission on the existing rule covers
+# both inodes. This now happens to exactly match the full
+# fs_read_nsfs_files()/read_file_perms set (getattr read open, modulo
+# ioctl/lock which have not been observed denied) that round 1's own
+# comment already flagged as the more idiomatic alternative -- still kept
+# as a raw, hand-listed allow rule here for consistency with every other
+# module in this investigation (udevptrace.te, udevkobjectuevent.te,
+# inittransition.te), all of which use raw allow rules rather than
+# interfaces, since these modules build standalone via
+# checkmodule/semodule_package outside the full selinux-policy tree where
+# fs_read_nsfs_files() is defined.
+
+gen_require(`
+	type udev_t;
+	type nsfs_t;
+')
+
+allow udev_t nsfs_t:file { read open getattr };

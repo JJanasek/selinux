@@ -1,0 +1,27 @@
+policy_module(udevrlimit, 1.0.0)
+
+# Round 2 of the nsfs_t investigation (branch mls-hang-nsfs-fix-round2,
+# built on mls-hang-nsfs-fix commits 70c0ff6a/c505c8ec, Testing Farm
+# request d8cb729e-fa01-48cc-8e6b-ba33088a2746): once the round-1 nsfs_t
+# { read open } denial stopped short-circuiting systemd-udevd's own
+# startup path (manager_setup()), the main daemon's crash-loop (PID
+# 650/680/689/691, t~=7.2-7.4s) surfaced a self:process setrlimit denial
+# that the earlier, silently-failing runs never reached:
+#
+#   avc: denied { setrlimit } for pid=650 comm="systemd-udevd"
+#     scontext=system_u:system_r:udev_t:s0-s15:c0.c1023
+#     tcontext=system_u:system_r:udev_t:s0-s15:c0.c1023 tclass=process
+#     permissive=0
+#
+# A self: rule -- udevd adjusting one of its own process resource limits
+# (systemd units routinely do this for their own LimitNOFILE=/LimitNPROC=
+# etc. settings before or during unit startup). udev.te's self:process
+# allow list doesn't include setrlimit, matching this investigation's
+# established pattern for the sys_ptrace gap already found and fixed in
+# tmt/mls-udev-ptrace-fix/udevptrace.te.
+
+gen_require(`
+	type udev_t;
+')
+
+allow udev_t self:process setrlimit;

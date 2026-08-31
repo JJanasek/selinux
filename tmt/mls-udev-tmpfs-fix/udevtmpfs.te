@@ -1,0 +1,51 @@
+policy_module(udevtmpfs, 1.0.0)
+
+# Round 2 of the nsfs_t investigation (branch mls-hang-nsfs-fix-round2,
+# built on mls-hang-nsfs-fix commits 70c0ff6a/c505c8ec, Testing Farm
+# request d8cb729e-fa01-48cc-8e6b-ba33088a2746): same startup crash-loop
+# as udevrlimit.te/udevcgroup.te (PID 650/680/689/691, t~=7.2-7.4s) also
+# surfaced a read+write denial on a deleted, anonymous memfd
+# ("/memfd:systemd-udevd (deleted)") backed by tmpfs -- systemd's own
+# sd_journal/notify-socket and various libsystemd helpers routinely create
+# a short-lived memfd (memfd_create()) for internal buffering/handoff
+# during a unit's own startup:
+#
+#   avc: denied { read write } for pid=650 comm="systemd-udevd"
+#     path="/memfd:systemd-udevd (deleted)" dev="tmpfs"
+#     scontext=system_u:system_r:udev_t:s0-s15:c0.c1023
+#     tcontext=system_u:object_r:tmpfs_t:s0 tclass=file permissive=0
+#
+# Not a self: rule -- tmpfs_t is the generic tmpfs filesystem type from
+# kernel/filesystem.te, and the memfd inode never picked up a udev_t
+# label (memfd_create() labels new inodes from the creating process's own
+# fscreate context under MLS's stricter defaults; a deleted, anonymous
+# file has no path-based restorecon to fix this after the fact). Minimal,
+# targeted grant: exactly the two permissions actually denied above (no
+# getattr/ioctl observed denied on this path in this run's capture).
+#
+# ROUND 3 (branch mls-hang-nsfs-fix-round3, built on mls-hang-nsfs-fix-
+# round2 commit cfa3f10b): two independent Testing Farm runs of round 2's
+# `{ read write }`-only rule (requests 74241c27-de78-47c3-9044-
+# 91b93a1800d0 and 382518d7-f6d5-4a30-b500-bb86262dfb99) both hit the
+# getattr this comment block above said was NOT observed -- it just
+# hadn't been reached yet, the same read/write-before-getattr ordering
+# round 2 found for nsfs_t and (see udevkobjectuevent.te) for the uevent
+# socket:
+#
+#   audit[576]: AVC avc:  denied  { getattr } for  pid=576
+#     comm="systemd-udevd" path="/memfd:systemd-udevd (deleted)"
+#     dev="tmpfs" ino=22 scontext=system_u:system_r:udev_t:s0-s15:c0.c1023
+#     tcontext=system_u:object_r:tmpfs_t:s15:c0.c1023 tclass=file
+#     permissive=0
+#
+# (confirmed in both runs, inode 22 and 21 respectively). Same non-fatal
+# "Failed to verify socket type of 5, ignoring" symptom as the uevent
+# socket denial -- udevd survives this one -- but closed here for the
+# same reason.
+
+gen_require(`
+	type udev_t;
+	type tmpfs_t;
+')
+
+allow udev_t tmpfs_t:file { read write getattr };

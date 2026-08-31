@@ -1,0 +1,27 @@
+policy_module(udevcgroup, 1.0.0)
+
+# Round 2 of the nsfs_t investigation (branch mls-hang-nsfs-fix-round2,
+# built on mls-hang-nsfs-fix commits 70c0ff6a/c505c8ec, Testing Farm
+# request d8cb729e-fa01-48cc-8e6b-ba33088a2746): same startup crash-loop
+# as udevrlimit.te (PID 650/680/689/691, t~=7.2-7.4s) also surfaced a write
+# denial on the per-unit cgroup's memory.pressure file -- systemd services
+# with MemoryPressureWatch= (the default since systemd v256, which this
+# hang investigation's Fedora-44/selinux-policy-mls-44.7-1.fc44 target
+# ships) write to their own cgroup's memory.pressure control file at
+# startup to configure PSI (Pressure Stall Information) monitoring:
+#
+#   avc: denied { write } for pid=650 comm="systemd-udevd"
+#     name="memory.pressure" dev="cgroup2"
+#     scontext=system_u:system_r:udev_t:s0-s15:c0.c1023
+#     tcontext=system_u:object_r:cgroup_t:s0 tclass=file permissive=0
+#
+# Minimal, targeted grant: exactly the one permission denied above,
+# nothing broader (no read/open/getattr observed denied on this path in
+# this run's capture).
+
+gen_require(`
+	type udev_t;
+	type cgroup_t;
+')
+
+allow udev_t cgroup_t:file write;

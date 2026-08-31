@@ -1,0 +1,97 @@
+policy_module(udevkobjectuevent, 1.0.0)
+
+# Evidenced by round 5 of tmt/mls-hang-live-ssh-real.fmf (t=5.284s in the
+# newly-captured early-boot window, journalctl -k source):
+#
+#   avc: denied { read write } for pid=622 comm="systemd-udevd"
+#     path="socket:[3414]" dev="sockfs" ino=3414
+#     scontext=system_u:system_r:udev_t:s0-s15:c0.c1023
+#     tcontext=system_u:system_r:kernel_t:s15:c0.c1023
+#     tclass=netlink_kobject_uevent_socket permissive=0
+#
+# This is NOT the earlier already-known auditd.conf-style MLS level/range
+# mismatch: policy/mls explicitly documents netlink_kobject_uevent_socket
+# as having "no MLS restrictions" (see the commented-out class list next to
+# the socket-class mlsconstrain block), and none of the mlsconstrain
+# statements for socket classes actually enumerate this class -- confirmed
+# by reading policy/mls directly. So this denial cannot be an MLS
+# range/level problem; it is a genuine missing TE allow rule.
+#
+# Confirmed by grepping the *entire* reference policy tree
+# (policy/modules/**/*.te, *.if): every single existing grant of
+# netlink_kobject_uevent_socket access, for every domain in the tree
+# (udev_t itself included, policy/modules/system/udev.te:57), is a
+# "self:netlink_kobject_uevent_socket" rule -- i.e. a domain accessing a
+# socket labeled with its OWN type. No domain anywhere is granted access to
+# a netlink_kobject_uevent_socket labeled kernel_t. That is exactly the
+# combination denied here: udev_t (scontext) against a socket labeled
+# kernel_t (tcontext), not against itself.
+#
+# The syscall audit record sharing this event's serial number is an
+# execve() of /usr/lib/systemd/systemd-udevd (success, exit=0) -- i.e. this
+# fires as an inherited-fd re-check at exec time, not at socket(2)/bind(2)
+# time. The self: rule already in udev.te covers udevd's own
+# freshly-created uevent socket; this additional, narrower rule is only for
+# the specific kernel_t-labeled instance actually observed (most plausibly
+# a socket fd created/labeled before this boot's SELinux policy load at
+# t=4.697s -- "systemd[1]: Successfully loaded SELinux policy" fires at the
+# exact same timestamp -- and thus stamped with the kernel's initial SID,
+# which never gets retroactively relabeled).
+#
+# Narrow, targeted fix per this investigation's established discipline:
+# grant exactly the two denied permissions, exactly for the observed
+# scontext/tclass/tcontext combination. Not yet empirically confirmed to
+# resolve (or contribute to resolving) the boot hang -- staged here for the
+# next mls-hang-live-ssh-real.fmf round, same pattern as the two other
+# known-insufficient-alone fixes already staged in mls-udev-ptrace-fix/ and
+# mls-hang-capture/{inittransition,udevnoatsecure}.te.
+#
+# ROUND 3 (branch mls-hang-nsfs-fix-round3, built on mls-hang-nsfs-fix-
+# round2 commit cfa3f10b): two independent Testing Farm runs of round 2's
+# `{ read write }`-only rule (requests 74241c27-de78-47c3-9044-
+# 91b93a1800d0 and 382518d7-f6d5-4a30-b500-bb86262dfb99) both hit a NEW,
+# third denial on this exact object -- granting read/write let the
+# original denial's syscall through, but exposed the next one right
+# behind it, the same "peel the onion" pattern round 2 itself already
+# found for nsfs_t:
+#
+#   audit[576]: AVC avc:  denied  { getattr } for  pid=576
+#     comm="systemd-udevd" path="socket:[1803]" dev="sockfs" ino=1803
+#     scontext=system_u:system_r:udev_t:s0-s15:c0.c1023
+#     tcontext=system_u:system_r:kernel_t:s15:c0.c1023
+#     tclass=netlink_kobject_uevent_socket permissive=0
+#
+# (PID/inode differ slightly between the two runs -- pid=576/ino=1803 in
+# the first, pid=581/ino=976 in the second -- confirming this is a
+# reproducible per-boot check, not a one-off.) Unlike round 2's
+# fatal-crash-loop denials, this one is NON-FATAL: systemd-udevd logs
+# "Failed to verify socket type of 5, ignoring: Permission denied" and
+# continues running normally. Fixed here anyway, on this investigation's
+# same "close every real denial we can see" discipline, since a
+# still-enforcing gap left in place is still an unresolved data point.
+#
+# Round 3's own first Testing Farm confirmation of the { read write
+# getattr } rule above (requests ed7f40c9-dfef-4a92-920f-a95fc24eecfa and
+# 6a891543-231d-412e-a5bd-195fd4243737 -- both a MAJOR WIN, the enforcing
+# hang itself is fully resolved, ens5/lo both get real addresses, no
+# tmt-reboot timeout) found a THIRD layer on this exact object, same
+# onion-peeling pattern as nsfs_t/tmpfs_t before it -- ioctl(SIOCGSKNS,
+# 0x894c) itself, the same socket-netns-identification ioctl already
+# documented in udevnsfs.te's own history, this time invoked directly on
+# the kernel_t-labeled uevent socket rather than udev_t's own netns file:
+#
+#   audit[644]: AVC avc:  denied  { ioctl } for  pid=644
+#     comm="systemd-udevd" path="socket:[1904]" dev="sockfs" ino=1904
+#     ioctlcmd=0x894c scontext=system_u:system_r:udev_t:s0-s15:c0.c1023
+#     tcontext=system_u:system_r:kernel_t:s15:c0.c1023
+#     tclass=netlink_kobject_uevent_socket permissive=0
+#
+# (confirmed identical, only pid/inode differ, in both runs). Also
+# non-fatal -- part of the same "Failed to verify socket type ... ignoring"
+# code path -- but closed here for completeness, so a future run's AVC
+# sweep on this object is (hopefully) finally empty.
+gen_require(`
+	type udev_t, kernel_t;
+')
+
+allow udev_t kernel_t:netlink_kobject_uevent_socket { read write getattr ioctl };
