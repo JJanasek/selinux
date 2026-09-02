@@ -7,21 +7,9 @@ description: |
     file's git history for the full investigation behind these fixes.
 
 prepare:
-  - name: Install and configure MLS policy in Permissive mode
+  - name: Install MLS policy, build/load policy fixes, switch to MLS and then Enforcing (2 reboots)
     how: shell
-    script: $TMT_TREE/tmt/mls-final-prepare-1-mls-permissive.sh
-
-  - name: Build and load cloud-init, sshd-session-pipes, and udev_t policy fixes
-    how: shell
-    script: $TMT_TREE/tmt/mls-final-prepare-2-build-modules.sh
-
-  - name: Reboot to apply MLS and relabel
-    how: shell
-    script: $TMT_TREE/tmt/mls-final-prepare-3-reboot-relabel.sh
-
-  - name: Switch to Enforcing and reboot again
-    how: shell
-    script: $TMT_TREE/tmt/mls-final-prepare-4-enforcing.sh
+    script: $TMT_TREE/tmt/mls-final-prepare.sh
 
 execute:
   how: tmt
