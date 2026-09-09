@@ -37,14 +37,92 @@ description: |
     override it with `-e PR_NUMBER=<n>` / `--tmt-environment PR_NUMBER=<n>`
     for whichever PR is actually under test.
 
+    In addition to the boot/cloud-init/AVC check above, this plan also
+    discovers and runs the real, canonical
+    https://github.com/SELinuxProject/selinux-testsuite against this same
+    MLS-enforcing, COPR-validated guest (see the second `discover` phase
+    below) -- this repo's own tmt/plans.fmf `/ci` plan already wires up
+    that same upstream testsuite via `how: fmf`, but only for a *separate*
+    validation track: targeted policy + SELinux userspace rebuilt from
+    this git checkout (STS_ROOT_DOMAIN: unconfined_t). That track is
+    orthogonal to this plan (stock Fedora userspace + the COPR-built
+    selinux-policy-mls RPM under test), so instead of reusing it as-is
+    this plan adds its own `fmf` discover phase, without the
+    /prepare-selinux-userspace build-from-git step (irrelevant here --
+    we're validating the shipped RPM policy, not this checkout's
+    userspace), and with STS_ROOT_DOMAIN set to sysadm_t instead of
+    unconfined_t.
+
+    sysadm_t (not unconfined_t) is the right root domain for MLS: this
+    plan's own prepare script already turns on the `ssh_sysadm_login`
+    boolean (needed for root's SSH session, which maps to
+    sysadm_u:sysadm_r:sysadm_t under MLS, to transition out of
+    sshd_session_t at all -- see mls-final-copr-prepare.sh). MLS/strict
+    policy has no unconfined_t. STS_ROOT_DOMAIN=sysadm_t is itself an
+    upstream-supported, CI-tested value (selinux-testsuite's own
+    .github/workflows/checks.yml matrix runs `domain: [unconfined_t,
+    sysadm_t]`), and runtests.pl explicitly accepts running as root in
+    sysadm_r (`$role ne "sysadm_r" && $role ne "unconfined_r" && $role ne
+    "system_r"`). The testsuite is also directly MLS-aware, not just
+    targeted/MCS-oriented: it auto-detects the running policy type via
+    its own tests/pol_detect (NON-MLS/MCS/MLS, based on the kernel's
+    initial SID level) and both tests/Makefile and policy/Makefile branch
+    on that ($(POL_TYPE) = MLS/MCS) to build extra MLS/MCS-only test
+    modules (test_glblub.cil for MLS, plus test_add_levels.cil for MCS)
+    on top of the always-built test_mlsconstrain.cil -- i.e. it ships
+    real, dedicated MLS test coverage, not something bolted on. The test
+    policy itself is just semodule-loaded on top of whatever base policy
+    is already active, so it does not assume/require targeted policy.
+
+    The testsuite's own tmt/plans.fmf `/prepare-system` test (order: 1)
+    only runs its STS_ROOT_DOMAIN/STS_KERNEL setup (and a possible
+    tmt-reboot) when `$TMT_REBOOT_COUNT -eq 0`; since this plan's own
+    prepare step already consumed 2 reboots switching to MLS+Enforcing
+    before execute even starts, that setup is a no-op here by the time
+    it runs -- harmless, since the sysadm_login boolean is already on
+    from this plan's own prepare script and MLS's root login already
+    maps to sysadm_u by default. Same filter as the existing `/ci` plan
+    (`tag:-ci & tag:-nfs`): excludes the CI-only meta-tests (`/avc-check`,
+    `/gitignore-coverage`) and the NFS subtest, which need infrastructure
+    (a real nfs-server, git checkout cleanliness) irrelevant to this VM.
+    Not filtered: `/unprepare`'s STS_ROOT_DOMAIN=sysadm_t branch tries to
+    revert root's login mapping to `unconfined_u` at the very end, which
+    likely does not exist under MLS -- if that harmless cleanup step
+    fails/errors, it does not affect the actual regression test results
+    above it.
+
 environment:
   PR_NUMBER: "3380"
+  # See the description above: sysadm_t (not unconfined_t) is the correct
+  # root domain for an MLS guest, and matches this plan's own prepare
+  # script (ssh_sysadm_login boolean already on). STS_KERNEL is a no-op
+  # here (see above) but set explicitly for documentation purposes.
+  STS_ROOT_DOMAIN: sysadm_t
+  STS_KERNEL: default
 
 prepare:
   - name: Install MLS policy from PR #3380's COPR build, build/load the 2 remaining local fixes, switch to MLS and then Enforcing (2 reboots)
     how: shell
     script: $TMT_TREE/tmt/mls-final-copr-prepare.sh
 
+discover:
+  - name: mls-boot-cloudinit
+    how: shell
+    tests:
+      - name: /mls-boot-cloudinit-avc-check
+        summary: Confirm cloud-init completed under cloud_init_t on the MLS-enforcing COPR guest; dump AVC denials informationally
+        # Must run before the selinux-testsuite's own /prepare-system
+        # (order: 1 below), which unconditionally truncates
+        # /var/log/audit/audit.log -- running any later would erase the
+        # boot-time AVC evidence this check depends on.
+        order: 0
+        duration: 10m
+        test: $TMT_TREE/tmt/mls-final-copr-execute.sh
+  - name: selinux-testsuite
+    how: fmf
+    url: https://github.com/SELinuxProject/selinux-testsuite
+    ref: main
+    filter: tag:-ci & tag:-nfs
+
 execute:
   how: tmt
-  script: $TMT_TREE/tmt/mls-final-copr-execute.sh
