@@ -73,7 +73,13 @@ case "$reboot_count" in
     fi
     echo "Resolved COPR repo id: $copr_repoid"
 
-    pinned_nvr=$(dnf -y repoquery --repo="$copr_repoid" --qf '%{name}-%{evr}.%{arch}' selinux-policy-mls | sort -V | tail -n1)
+    # NOTE: dnf5's repoquery --qf/--queryformat, unlike dnf4's, does NOT
+    # append an implicit newline after each formatted package (it matches
+    # rpm --query behavior instead) -- an explicit '\n' in the format
+    # string is required, or multiple matches (e.g. several COPR builds
+    # for the same PR after multiple pushes) get concatenated together
+    # onto one unseparated line, corrupting the NVR passed to dnf install.
+    pinned_nvr=$(dnf -y repoquery --repo="$copr_repoid" --qf '%{name}-%{evr}.%{arch}\n' selinux-policy-mls | sort -V | tail -n1)
     if [ -z "$pinned_nvr" ]; then
         echo "FAIL: repoquery found no selinux-policy-mls build in repo $copr_repoid" >&2
         exit 1
@@ -89,7 +95,7 @@ case "$reboot_count" in
         echo "=== rpm -q selinux-policy-mls ==="
         rpm -q selinux-policy-mls
         echo "=== dnf repoquery --installed (repo id) ==="
-        dnf -y repoquery --installed --qf '%{name}-%{evr}.%{arch}  [from_repo: %{from_repo}]' selinux-policy-mls
+        dnf -y repoquery --installed --qf '%{name}-%{evr}.%{arch}  [from_repo: %{from_repo}]\n' selinux-policy-mls
         echo "=== dnf copr list ==="
         dnf -y copr list
     } | tee /root/copr-provenance.log
