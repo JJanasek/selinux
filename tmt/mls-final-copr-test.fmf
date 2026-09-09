@@ -1,0 +1,33 @@
+summary: MLS Enforcing-Mode Boot Validation (COPR-based validation of PR #3380, EXPERIMENTAL)
+description: |
+    EXPERIMENTAL sibling of tmt/mls-final.fmf (same directory). Validates
+    upstream PR #3380
+    (https://github.com/fedora-selinux/selinux-policy/pull/3380, "Enable
+    cloud-init under MLS", 2 commits: the cloud-init fix + the udev_t
+    MLS-boot-hang fix) as the REAL Packit/COPR-built selinux-policy-mls
+    RPM package, instead of manually building/loading standalone .te
+    modules on top of an unpatched package.
+
+    Enables the Packit-managed COPR repo
+    packit/fedora-selinux-selinux-policy-3380 (confirmed via the GitHub
+    API against PR #3380 HEAD c3fbc760b9: rpm-build succeeded for
+    fedora-44-x86_64, fedora-45-x86_64 and fedora-rawhide-x86_64) before
+    installing selinux-policy-mls, so dnf picks up the patched package
+    directly. This covers 6 of the 8 modules the production plan builds
+    locally (cloudform + the 5 udev_t fixes now folded into udev.te
+    upstream); mlssshpipes and udevptrace are NOT part of PR #3380 (not
+    present anywhere in its diff) and are still built/loaded locally here.
+
+    This is a one-off validation test, NOT a replacement for the
+    production tmt/mls-final.fmf plan/mechanism. Do not treat a pass here
+    as a reason to change mls-final.fmf without a separate, explicit
+    decision to do so.
+
+prepare:
+  - name: Install MLS policy from PR #3380's COPR build, build/load the 2 remaining local fixes, switch to MLS and then Enforcing (2 reboots)
+    how: shell
+    script: $TMT_TREE/tmt/mls-final-copr-prepare.sh
+
+execute:
+  how: tmt
+  script: $TMT_TREE/tmt/mls-final-copr-execute.sh
