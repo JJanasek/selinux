@@ -4,8 +4,8 @@ set -eo pipefail
 # EXPERIMENTAL variant of mls-final-execute.sh (tmt/mls-final-copr-test.fmf).
 # Identical to the production execute step, plus an extra provenance
 # printout up front confirming selinux-policy-mls really came from the
-# PR #3380 COPR build (packit/fedora-selinux-selinux-policy-3380), not a
-# regular Fedora repo.
+# PR's own COPR build (packit/fedora-selinux-selinux-policy-${PR_NUMBER}),
+# not a regular Fedora repo.
 
 echo "=== selinux-policy-mls COPR provenance (captured during prepare) ==="
 cat /root/copr-provenance.log 2>&1 || echo "(no /root/copr-provenance.log found!)"

@@ -3,19 +3,24 @@ set -eo pipefail
 
 # EXPERIMENTAL variant of mls-final-prepare.sh (tmt/mls-final-copr-test.fmf).
 #
-# Validates PR #3380 (https://github.com/fedora-selinux/selinux-policy/pull/3380,
-# "Enable cloud-init under MLS" + the udev_t MLS-boot-hang fix, 2 commits) as
-# an actual, real Packit/COPR-built selinux-policy-mls RPM, instead of
-# manually building/loading standalone .te modules on top of an unpatched
-# package (that's what mls-final-prepare.sh still does, unchanged, for the
-# production tmt/mls-final.fmf plan).
+# Validates a selinux-policy pull request as an actual, real Packit/COPR-
+# built selinux-policy-mls RPM (COPR project packit/fedora-selinux-selinux-
+# policy-${PR_NUMBER}, auto-created per-PR by Packit's copr_build job),
+# instead of manually building/loading standalone .te modules on top of an
+# unpatched package (that's what mls-final-prepare.sh still does,
+# unchanged, for the production tmt/mls-final.fmf plan).
 #
-# Confirmed via the GitHub API (check-runs + Packit's own /api/copr-builds
-# endpoint) on 2026-09-09 against PR #3380 HEAD commit c3fbc760b9:
-#   - COPR project: packit/fedora-selinux-selinux-policy-3380 (owner "packit")
-#   - rpm-build check-runs all "success" for chroots: fedora-44-x86_64,
-#     fedora-45-x86_64, fedora-rawhide-x86_64
-#   - built selinux-policy-mls NVR e.g. 45.15-1.20260901100528187839.pr3380.3.g4eefc83f2.fc44
+# Requires $PR_NUMBER (the selinux-policy PR number) to be set in the
+# environment -- see mls-final-copr-test.fmf's `environment:` block. This
+# script is otherwise generic across PRs; it does NOT hardcode any NVR, so
+# no manual update is needed as a PR gets new commits/rebuilds.
+#
+# NOTE: as originally written/validated against PR #3380
+# (https://github.com/fedora-selinux/selinux-policy/pull/3380, "Enable
+# cloud-init under MLS" + the udev_t MLS-boot-hang fix, 2 commits) --
+# confirmed via the GitHub API on 2026-09-09 against PR #3380 HEAD commit
+# c3fbc760b9: rpm-build check-runs all "success" for chroots fedora-44-
+# x86_64, fedora-45-x86_64, fedora-rawhide-x86_64.
 #
 # PR #3380's actual diff (`gh`/GitHub API `pulls/3380` diff) only touches:
 #   dist/mls/modules.conf, policy/modules/contrib/cloudform.te,
@@ -33,32 +38,49 @@ reboot_count="${TMT_REBOOT_COUNT:-0}"
 
 case "$reboot_count" in
 0)
-    # --- COPR-based install of the real PR #3380 package, replacing the
-    # plain `dnf install -y selinux-policy-mls` + manual module build/load
-    # for cloudform/udevnsfs/udevrlimit/udevcgroup/udevkobjectuevent/udevtmpfs ---
-    dnf install -y 'dnf-command(copr)' || true
-    dnf -y copr enable packit/fedora-selinux-selinux-policy-3380
-
+    # --- COPR-based install of the real PR's package, replacing the plain
+    # `dnf install -y selinux-policy-mls` + manual module build/load for
+    # cloudform/udevnsfs/udevrlimit/udevcgroup/udevkobjectuevent/udevtmpfs ---
+    #
     # PLAIN `dnf install -y selinux-policy-mls` (tried first, see PR/commit
     # history) does NOT reliably pick up the COPR build: dnf/dnf5 compares
     # EVR across ALL enabled repos regardless of enable order or which repo
     # is "new", and Fedora-Rawhide's own fast-moving repo can easily already
     # contain a *higher*-release selinux-policy-mls build than Packit's PR
-    # snapshot (observed live: rawhide's own 45.15-2.fc46 beat Packit's PR
-    # #3380 build 45.15-1.<snapshot>.pr3380.3.g4eefc83f2.fc44 on release
-    # comparison, even with the COPR repo enabled and no errors) -- so the
-    # "real PR package" silently never got installed at all.
+    # snapshot (observed live: rawhide's own 45.15-2.fc46 beat a Packit PR
+    # build's own dist-tagged release on plain EVR comparison, even with
+    # the COPR repo enabled and no errors) -- so the "real PR package"
+    # silently never got installed at all.
     #
-    # Fix: pin the EXACT NVR confirmed built by Packit for PR #3380 HEAD
-    # (c3fbc760b9) on the fedora-44-x86_64 chroot (this plan targets the
-    # matching Fedora-44 compose -- see the .fmf's compose note). Confirmed
-    # via https://prod.packit.dev/api/copr-builds/3924349 on 2026-09-09.
-    # If PR #3380 gets new commits and a fresh COPR rebuild, this NVR will
-    # go stale and the exact-NVR install below will simply fail-not-found
-    # (loud, not silent) -- re-check the Packit dashboard/API and update it.
-    pr3380_nvr="selinux-policy-mls-45.15-1.20260901100528187839.pr3380.3.g4eefc83f2.fc44"
+    # Fix: instead of hardcoding one PR's NVR (which goes stale on every
+    # new COPR rebuild), dynamically look up the *actual* repo id dnf
+    # assigned the just-enabled COPR project, then query and pin the
+    # highest NVR that repo (and only that repo) currently publishes for
+    # selinux-policy-mls. Passing dnf a fully-qualified N-V-R.A (not just
+    # the bare name) makes it install that exact build regardless of what
+    # higher-EVR builds exist elsewhere, because Packit/COPR builds always
+    # carry a unique dist-tag suffix (.prNNNN.<n>.g<hash>) that no regular
+    # Fedora-repo build will ever coincidentally match.
+    copr_project="fedora-selinux-selinux-policy-${PR_NUMBER:?PR_NUMBER must be set, e.g. 3380}"
+    dnf install -y 'dnf-command(copr)' || true
+    dnf -y copr enable "packit/${copr_project}"
 
-    dnf install -y "$pr3380_nvr" policycoreutils-python-utils audit
+    copr_repoid=$(dnf -y repolist --enabled | awk -v p="$copr_project" '$0 ~ p {print $1; exit}')
+    if [ -z "$copr_repoid" ]; then
+        echo "FAIL: could not find an enabled repo id for COPR project packit/${copr_project}" >&2
+        dnf -y repolist --enabled >&2
+        exit 1
+    fi
+    echo "Resolved COPR repo id: $copr_repoid"
+
+    pinned_nvr=$(dnf -y repoquery --repo="$copr_repoid" --qf '%{name}-%{evr}.%{arch}' selinux-policy-mls | sort -V | tail -n1)
+    if [ -z "$pinned_nvr" ]; then
+        echo "FAIL: repoquery found no selinux-policy-mls build in repo $copr_repoid" >&2
+        exit 1
+    fi
+    echo "Pinning to COPR-built NVR: $pinned_nvr"
+
+    dnf install -y "$pinned_nvr" policycoreutils-python-utils audit
 
     # Provenance check: confirm the installed package actually is that
     # exact PR #3380 COPR build and not some other (e.g. regular Fedora
@@ -72,11 +94,11 @@ case "$reboot_count" in
         dnf -y copr list
     } | tee /root/copr-provenance.log
 
-    if ! grep -q '\.pr3380\.' /root/copr-provenance.log; then
-        echo "FAIL: installed selinux-policy-mls release does not contain '.pr3380.' -- COPR package was NOT picked up" >&2
+    if ! grep -q "\.pr${PR_NUMBER}\." /root/copr-provenance.log; then
+        echo "FAIL: installed selinux-policy-mls release does not contain '.pr${PR_NUMBER}.' -- COPR package was NOT picked up" >&2
         exit 1
     fi
-    echo "PASS: selinux-policy-mls release string confirms it came from the PR #3380 COPR build"
+    echo "PASS: selinux-policy-mls release string confirms it came from the PR #${PR_NUMBER} COPR build"
 
     source $TMT_TREE/tmt/prepare_for_mls.sh
     prepare_for_mls_configure

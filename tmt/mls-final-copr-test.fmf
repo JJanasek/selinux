@@ -30,6 +30,16 @@ description: |
     as a reason to change mls-final.fmf without a separate, explicit
     decision to do so.
 
+    Requires environment variable PR_NUMBER (the selinux-policy PR number
+    whose Packit-managed COPR build, packit/fedora-selinux-selinux-policy-
+    ${PR_NUMBER}, should be installed from). Defaults to 3380 below for
+    manual/ad-hoc runs; a CI caller (e.g. `testing-farm request`) should
+    override it with `-e PR_NUMBER=<n>` / `--tmt-environment PR_NUMBER=<n>`
+    for whichever PR is actually under test.
+
+environment:
+  PR_NUMBER: "3380"
+
 prepare:
   - name: Install MLS policy from PR #3380's COPR build, build/load the 2 remaining local fixes, switch to MLS and then Enforcing (2 reboots)
     how: shell
