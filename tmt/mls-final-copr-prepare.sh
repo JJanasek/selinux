@@ -38,16 +38,36 @@ case "$reboot_count" in
     # for cloudform/udevnsfs/udevrlimit/udevcgroup/udevkobjectuevent/udevtmpfs ---
     dnf install -y 'dnf-command(copr)' || true
     dnf -y copr enable packit/fedora-selinux-selinux-policy-3380
-    dnf install -y selinux-policy-mls policycoreutils-python-utils audit
 
-    # Provenance check: confirm the installed package actually came from
-    # the COPR repo (Packit tags its builds' release field with
-    # ".prNNNN." + the short commit hash) and not a regular Fedora repo.
+    # PLAIN `dnf install -y selinux-policy-mls` (tried first, see PR/commit
+    # history) does NOT reliably pick up the COPR build: dnf/dnf5 compares
+    # EVR across ALL enabled repos regardless of enable order or which repo
+    # is "new", and Fedora-Rawhide's own fast-moving repo can easily already
+    # contain a *higher*-release selinux-policy-mls build than Packit's PR
+    # snapshot (observed live: rawhide's own 45.15-2.fc46 beat Packit's PR
+    # #3380 build 45.15-1.<snapshot>.pr3380.3.g4eefc83f2.fc44 on release
+    # comparison, even with the COPR repo enabled and no errors) -- so the
+    # "real PR package" silently never got installed at all.
+    #
+    # Fix: pin the EXACT NVR confirmed built by Packit for PR #3380 HEAD
+    # (c3fbc760b9) on the fedora-44-x86_64 chroot (this plan targets the
+    # matching Fedora-44 compose -- see the .fmf's compose note). Confirmed
+    # via https://prod.packit.dev/api/copr-builds/3924349 on 2026-09-09.
+    # If PR #3380 gets new commits and a fresh COPR rebuild, this NVR will
+    # go stale and the exact-NVR install below will simply fail-not-found
+    # (loud, not silent) -- re-check the Packit dashboard/API and update it.
+    pr3380_nvr="selinux-policy-mls-45.15-1.20260901100528187839.pr3380.3.g4eefc83f2.fc44"
+
+    dnf install -y "$pr3380_nvr" policycoreutils-python-utils audit
+
+    # Provenance check: confirm the installed package actually is that
+    # exact PR #3380 COPR build and not some other (e.g. regular Fedora
+    # repo) build of selinux-policy-mls.
     {
         echo "=== rpm -q selinux-policy-mls ==="
         rpm -q selinux-policy-mls
         echo "=== dnf repoquery --installed (repo id) ==="
-        dnf -y repoquery --installed --qf '%{name}-%{evr}.%{arch}  [repo: %{reponame}]' selinux-policy-mls
+        dnf -y repoquery --installed --qf '%{name}-%{evr}.%{arch}  [from_repo: %{from_repo}]' selinux-policy-mls
         echo "=== dnf copr list ==="
         dnf -y copr list
     } | tee /root/copr-provenance.log

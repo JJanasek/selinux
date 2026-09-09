@@ -12,11 +12,18 @@ description: |
     packit/fedora-selinux-selinux-policy-3380 (confirmed via the GitHub
     API against PR #3380 HEAD c3fbc760b9: rpm-build succeeded for
     fedora-44-x86_64, fedora-45-x86_64 and fedora-rawhide-x86_64) before
-    installing selinux-policy-mls, so dnf picks up the patched package
-    directly. This covers 6 of the 8 modules the production plan builds
-    locally (cloudform + the 5 udev_t fixes now folded into udev.te
-    upstream); mlssshpipes and udevptrace are NOT part of PR #3380 (not
-    present anywhere in its diff) and are still built/loaded locally here.
+    installing selinux-policy-mls. Since dnf/dnf5 picks the highest EVR
+    across ALL enabled repos (not just the newly-enabled one), and a
+    fast-moving compose can already have a newer selinux-policy-mls build
+    than Packit's PR snapshot (observed live on Fedora-Rawhide), the
+    prepare script pins the exact NVR Packit built for PR #3380 on the
+    fedora-44-x86_64 chroot -- so run this plan against --compose
+    Fedora-44, not Fedora-Rawhide.
+
+    This covers 6 of the 8 modules the production plan builds locally
+    (cloudform + the 5 udev_t fixes now folded into udev.te upstream);
+    mlssshpipes and udevptrace are NOT part of PR #3380 (not present
+    anywhere in its diff) and are still built/loaded locally here.
 
     This is a one-off validation test, NOT a replacement for the
     production tmt/mls-final.fmf plan/mechanism. Do not treat a pass here
