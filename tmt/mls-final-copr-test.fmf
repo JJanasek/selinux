@@ -177,9 +177,33 @@ description: |
     (`checkpolicy_t`/`semanage_t` `map` on `etc_t`, `semanage_t` `map` on
     `var_t`, `semanage_t` `relabelfrom` on `semanage_store_t` dir+file),
     built/loaded by `mls-final-copr-prepare.sh` alongside the other two
-    non-upstreamed local fixes. Re-run as Testing Farm request
-    <PENDING -- see below for the actual result> to confirm `run/main`
-    now gets past the `semodule -i test_policy.pp` step.
+    non-upstreamed local fixes.
+
+    CONFIRMED FIXED by re-running with this module (Testing Farm request
+    bc9ce803-74e3-460f-a8d3-32a0e7e6157e,
+    https://artifacts.dev.testing-farm.io/bc9ce803-74e3-460f-a8d3-32a0e7e6157e):
+    `make -C policy load`'s `semodule -i test_policy/test_policy.pp ...`
+    now succeeds with zero denials (no more "Permission denied"), and
+    `run/main` goes on to actually execute the regression suite for the
+    first time ever under this plan -- 41 subtests ran, 40 passed
+    (`domain_trans`, `entrypoint`, `execshare`, `exectrace`, `mmap`,
+    `unix_socket`, `ptrace`, `dyntrans`, `bounds`, ... -- the entire
+    non-network suite). This confirms the map/relabelfrom fix above is
+    both correct and sufficient for what it targets.
+
+    `run/main` still reports `result: error` overall, but for a new,
+    unrelated reason (Problem B, not yet fixed, needs its own follow-up):
+    subtest 41, `inet_socket/tcp/test`, failed with `connect: Connection
+    refused` followed by `runcon: '.../inet_socket/tcp/server': Permission
+    denied` -- and the tmt run then aborted the whole plan afterwards with
+    an infrastructure-level `SSH master process failed to start` /
+    `_wait_for_ssh_master timed out after waiting 0:02:00` error, which is
+    why `/mls-testsuite-diag` never got to run and capture ausearch
+    evidence for this new failure. Whether Problem B is itself
+    MLS-specific, a genuine missing permission for `sysadm_t`-run network
+    test binaries, or a Testing Farm guest networking/firewall artifact is
+    not yet known -- worth its own dedicated diagnostic pass, analogous to
+    how Problem A was tracked down here, in a follow-up session.
 
     - `/tmt/tests/unprepare` FAILED, exactly as predicted below:
     `semanage login --modify -s unconfined_u root` errors under MLS
