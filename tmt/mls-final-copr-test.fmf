@@ -206,11 +206,21 @@ description: |
     to support are already covered separately by `test_mlsconstrain.cil`.
     This is not a COPR/PR #3380 gap and not a TF firewall issue (nothing
     is listening because the server never execs). Fixed in this plan by
-    `/mls-patch-testsuite-inet` (order 2.5): patch the discovered
-    testsuite tree to drop those two server-only ifdef blocks before
-    `/run/main` rebuilds/loads `test_policy`. The post-`run/main` SSH
-    timeout on bc9ce803 is treated as infra fallout from the long failing
-    subtest, not the root cause.
+    `/mls-patch-testsuite-inet` (order 0.5 in the
+    `mls-boot-cloudinit` discover phase): patch the fmf-discovered
+    testsuite tree to drop those two server-only ifdef blocks before the
+    separate `selinux-testsuite` discover phase executes at all. TMT runs
+    each discover phase's tests as a batch (see execute/internal.py:
+    one enqueue per discover plugin), so `order: 2.5` in a later shell
+    discover phase still ran *after* `/prepare-system` and `/run/main`
+    had already built/loaded `test_policy.pp` from the unpatched
+    `test_inet_socket.te` (TF 291f8d79). Order 0.5 in the first phase
+    runs after discover has cloned the tree but before any testsuite test
+    -- including `/prepare-system` (order 1), which does not build policy
+    itself but precedes `/run/main` (order 3, `make -C .. test` →
+    `make -C policy load`). The post-`run/main` SSH timeout on bc9ce803
+    is treated as infra fallout from the long failing subtest, not the
+    root cause.
 
     - `/tmt/tests/unprepare` FAILED, exactly as predicted below:
     `semanage login --modify -s unconfined_u root` errors under MLS
@@ -262,6 +272,15 @@ discover:
         order: 0
         duration: 10m
         test: $TMT_TREE/tmt/mls-final-copr-execute.sh
+      - name: /mls-patch-testsuite-inet
+        summary: Drop mcs_constrained(test_inet_server_t) from discovered testsuite policy before testsuite execute phase (Problem B)
+        # Same discover phase as the boot check so this runs before TMT
+        # starts the selinux-testsuite discover phase's batch (where
+        # /prepare-system and /run/main live). order 0.5 is after boot
+        # (0) but before testsuite /prepare-system (1).
+        order: 0.5
+        duration: 2m
+        test: $TMT_TREE/tmt/mls-patch-testsuite-inet.sh
   - name: selinux-testsuite
     how: fmf
     url: https://github.com/SELinuxProject/selinux-testsuite
@@ -278,16 +297,6 @@ discover:
     # it silently.
     exclude:
       - /unprepare$
-  - name: mls-testsuite-inet-patch
-    how: shell
-    tests:
-      - name: /mls-patch-testsuite-inet
-        summary: Drop mcs_constrained(test_inet_server_t) from discovered testsuite policy before run/main (Problem B)
-        # After selinux-testsuite discover (implicit) and /machine-info (2),
-        # before /run/main (3) rebuilds test_policy.pp from policy/*.te.
-        order: 2.5
-        duration: 2m
-        test: $TMT_TREE/tmt/mls-patch-testsuite-inet.sh
   - name: mls-testsuite-diag
     how: shell
     tests:
