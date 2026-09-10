@@ -81,15 +81,67 @@ description: |
     before execute even starts, that setup is a no-op here by the time
     it runs -- harmless, since the sysadm_login boolean is already on
     from this plan's own prepare script and MLS's root login already
-    maps to sysadm_u by default. Same filter as the existing `/ci` plan
+    maps to sysadm_u by default.
+
+    Same filter as the existing `/ci` plan
     (`tag:-ci & tag:-nfs`): excludes the CI-only meta-tests (`/avc-check`,
     `/gitignore-coverage`) and the NFS subtest, which need infrastructure
     (a real nfs-server, git checkout cleanliness) irrelevant to this VM.
-    Not filtered: `/unprepare`'s STS_ROOT_DOMAIN=sysadm_t branch tries to
-    revert root's login mapping to `unconfined_u` at the very end, which
-    likely does not exist under MLS -- if that harmless cleanup step
-    fails/errors, it does not affect the actual regression test results
-    above it.
+
+    RESULTS FROM A REAL RUN (Testing Farm request
+    d1bebfbc-9770-4a68-a193-9dbe285ab1cd,
+    https://artifacts.dev.testing-farm.io/d1bebfbc-9770-4a68-a193-9dbe285ab1cd):
+    confirmed the whole mechanism above works end-to-end (COPR install,
+    MLS switch, 2 reboots, our own boot/cloud-init/AVC check all PASS),
+    and surfaced 2 real, MLS-specific problems in the upstream testsuite
+    run itself -- neither is a problem with this plan's own prepare/COPR
+    logic:
+
+    - `/tmt/tests/run/main` (the actual selinux-testsuite regression
+    suite) ERRORED before running a single real test case:
+    `semodule -i test_policy/test_policy.pp ...` failed with
+    `libsemanage.semanage_direct_install_file: Unable to read file
+    test_policy/test_policy.pp. (Permission denied).` -- immediately
+    after that same file was freshly built by the preceding `make -C
+    policy load` step in the very same test/process. That real run's own
+    artifacts did not capture ausearch/`ls -Z` evidence for this (tmt
+    only kept `output.txt` for that testcase), so whether this is a real
+    missing MLS `allow`/`mlsconstrain` policy rule (a selinux-policy bug,
+    in scope for this epic) or a plain tooling/DAC issue is NOT yet
+    confirmed with hard evidence -- see the new `mls-testsuite-diag`
+    discover phase below, added specifically to capture that evidence on
+    the next real run (`ausearch -m AVC,USER_AVC`, `ls -Z`/`stat`/
+    `matchpathcon` on test_policy.pp, `id -Z`), scheduled to run right
+    after `/run/main` and before `/unprepare` resets anything. Read that
+    diagnostic test's output first if this plan is re-run and `/run/main`
+    still errors the same way -- do not re-speculate blindly. This is
+    deliberately NOT fixed here: per this epic's own scope, a real
+    missing selinux-policy `allow` rule must be identified precisely (via
+    the evidence above) and proposed as a separate, dedicated
+    selinux-policy PR/ticket, not bundled into this validation plan.
+
+    - `/tmt/tests/unprepare` FAILED, exactly as predicted below:
+    `semanage login --modify -s unconfined_u root` errors under MLS
+    (`libsemanage.dbase_llist_query: could not query record value` /
+    `OSError: Error`) because `unconfined_u` is not a valid SELinux user
+    on an MLS system. Root cause confirmed by reading upstream
+    https://github.com/SELinuxProject/selinux-testsuite's own
+    `tmt/tests.fmf` `/unprepare` test: its `STS_ROOT_DOMAIN = sysadm_t`
+    branch unconditionally hardcodes `-s unconfined_u` when reverting
+    root's login mapping, instead of reverting to whatever
+    STS_ROOT_DOMAIN implies (`sysadm_u` here) -- an upstream oversight,
+    not something wrong in our own prepare script (which already set
+    root to `sysadm_u` correctly). No existing upstream issue/PR about
+    this was found (GitHub search on SELinuxProject/selinux-testsuite for
+    "unconfined_u"/"unprepare"/"STS_ROOT_DOMAIN" on 2026-09-10 found
+    nothing relevant). Given this is third-party, upstream test code we
+    don't control the merge timeline of, and the VM this runs against is
+    a fully ephemeral, one-shot Testing Farm guest that does not need its
+    SELinux login mappings to survive past this test session anyway,
+    `/tmt/tests/unprepare` is excluded below (`exclude:`) rather than
+    patched upstream or worked around with an extra post-unprepare fixup
+    step -- it is a harmless, well-understood, non-blocking known issue,
+    not a silent mask: this paragraph documents exactly why.
 
 environment:
   PR_NUMBER: "3380"
@@ -123,6 +175,33 @@ discover:
     url: https://github.com/SELinuxProject/selinux-testsuite
     ref: main
     filter: tag:-ci & tag:-nfs
+    # Known, upstream, MLS-specific, non-blocking issue -- see the
+    # "RESULTS FROM A REAL RUN" paragraph above for the full explanation.
+    # /unprepare's STS_ROOT_DOMAIN=sysadm_t branch unconditionally tries
+    # `semanage login --modify -s unconfined_u root`, which errors out
+    # under MLS (unconfined_u does not exist there). This guest is
+    # ephemeral and does not need that login mapping restored, so the
+    # cleanest fix available to us (this is upstream, third-party test
+    # code) is to just not run it, rather than let it fail loudly or mask
+    # it silently.
+    exclude:
+      - /unprepare$
+  - name: mls-testsuite-diag
+    how: shell
+    tests:
+      - name: /mls-testsuite-diag-run-main-evidence
+        summary: Capture real ausearch/ls-Z/id-Z evidence for the selinux-testsuite run/main "test_policy.pp Permission denied" failure (Problem A); purely informational, never blocks the plan
+        # Must run after /selinux-testsuite/tmt/tests/run/main (order: 3,
+        # where the failure happens) so there is something to capture,
+        # and before /selinux-testsuite/tmt/tests/unprepare (order: 5,
+        # harmless either way since it's excluded above) -- order: 4
+        # lands exactly between them and does not collide with anything
+        # else (the upstream /avc-check and /gitignore-coverage tests
+        # that also use order: 4 are tag:[ci], already filtered out
+        # above).
+        order: 4
+        duration: 5m
+        test: $TMT_TREE/tmt/mls-testsuite-diag.sh
 
 execute:
   how: tmt
