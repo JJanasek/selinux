@@ -103,22 +103,49 @@ description: |
     `libsemanage.semanage_direct_install_file: Unable to read file
     test_policy/test_policy.pp. (Permission denied).` -- immediately
     after that same file was freshly built by the preceding `make -C
-    policy load` step in the very same test/process. That real run's own
-    artifacts did not capture ausearch/`ls -Z` evidence for this (tmt
-    only kept `output.txt` for that testcase), so whether this is a real
-    missing MLS `allow`/`mlsconstrain` policy rule (a selinux-policy bug,
-    in scope for this epic) or a plain tooling/DAC issue is NOT yet
-    confirmed with hard evidence -- see the new `mls-testsuite-diag`
-    discover phase below, added specifically to capture that evidence on
-    the next real run (`ausearch -m AVC,USER_AVC`, `ls -Z`/`stat`/
-    `matchpathcon` on test_policy.pp, `id -Z`), scheduled to run right
-    after `/run/main` and before `/unprepare` resets anything. Read that
-    diagnostic test's output first if this plan is re-run and `/run/main`
-    still errors the same way -- do not re-speculate blindly. This is
-    deliberately NOT fixed here: per this epic's own scope, a real
-    missing selinux-policy `allow` rule must be identified precisely (via
-    the evidence above) and proposed as a separate, dedicated
-    selinux-policy PR/ticket, not bundled into this validation plan.
+    policy load` step in the very same test/process. That first real run
+    captured no ausearch/`ls -Z` evidence for it, so a follow-up
+    diagnostic-only discover phase (`mls-testsuite-diag`, see below) was
+    added and re-run (Testing Farm request
+    a61990ea-0d68-4790-9891-0d45bc3a8f2f,
+    https://artifacts.dev.testing-farm.io/a61990ea-0d68-4790-9891-0d45bc3a8f2f)
+    specifically to capture hard evidence -- CONFIRMED, root cause now
+    known with certainty via `ausearch -m AVC,USER_AVC`:
+
+    ```
+    avc: denied { map } for pid=1760 comm=semodule
+      path=.../tests/policy/test_policy/test_policy.pp
+      scontext=sysadm_u:sysadm_r:semanage_t:s0-s15:c0.c1023
+      tcontext=sysadm_u:object_r:var_t:s0 tclass=file permissive=0
+    ```
+
+    This IS a real, MLS-specific selinux-policy denial, not a DAC/tooling
+    issue: `semodule` (invoked by `make` running as our `sysadm_t` SSH
+    session) domain-transitions into `semanage_t`, but keeps the calling
+    session's FULL clearance RANGE (`s0-s15:c0.c1023`) as its own running
+    context, instead of being clamped down to a single fixed level via a
+    `range_transition`. `test_policy.pp` itself is an ordinary file with
+    a normal single-point level (`var_t:s0`, exactly what `matchpathcon`
+    predicts). `map` (mmap, which is what `semanage_direct_install_file`
+    uses to read module files -- hence "Permission denied" rather than an
+    AVC-less DAC error) apparently hits a stricter MLS constraint here
+    than a plain read/open would: the diagnostic run also caught the same
+    exact pattern -- a RANGED source denied `{ map }` against a
+    single-level target -- for `checkpolicy_t` (against `/etc/ld.so.cache`,
+    `etc_t:s0`) and for `semanage_t` again (same `etc_t:s0` file), plus a
+    large cascade of `{ relabelfrom }` denials from `semanage_t` against
+    pre-existing `semanage_store_t` module files/dirs (`cil`, `hll`,
+    `lang_ext`, one dir named `accountsd`) immediately before the fatal
+    one -- consistent with `semanage_t` never having a working single-
+    level identity under this MLS policy. This is deliberately NOT fixed
+    here: per this epic's own scope, this candidate fix -- add a
+    `range_transition` clamping `checkpolicy_t`/`semanage_t` (and
+    possibly other admin-tool domains entered from `sysadm_t`) to a
+    single low level, OR relax the constraint gating `{ map }` for these
+    domains/types to dominance (matching plain `read`) instead of
+    equality -- belongs in a separate, dedicated selinux-policy
+    PR/ticket (with real reproduction via this same plan), not bundled
+    into this validation plan.
 
     - `/tmt/tests/unprepare` FAILED, exactly as predicted below:
     `semanage login --modify -s unconfined_u root` errors under MLS

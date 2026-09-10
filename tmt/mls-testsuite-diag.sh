@@ -1,24 +1,28 @@
 #!/bin/bash
 # Diagnostic-only test for Problem A (see mls-final-copr-test.fmf's
-# description): the real Testing Farm run d1bebfbc-9770-4a68-a193-
-# a193-9dbe285ab1cd/d1bebfbc-9770-4a68-a193-9dbe285ab1cd showed
+# description). First added after Testing Farm run
+# d1bebfbc-9770-4a68-a193-9dbe285ab1cd showed
 # /selinux-testsuite/tmt/tests/run/main erroring out with:
 #   libsemanage.semanage_direct_install_file: Unable to read file
 #   test_policy/test_policy.pp. (Permission denied).
-# during `semodule -i test_policy/test_policy.pp ...` -- but that run
-# captured no ausearch/ls -Z evidence for it (tmt's own artifact copying
-# only kept output.txt for that testcase), so the root cause (real MLS
-# `mlsconstrain`/range-transition AVC vs. a plain DAC/ownership issue from
-# the preceding `make` step) is not yet confirmed with hard evidence.
+# during `semodule -i test_policy/test_policy.pp ...`, but that run
+# captured no ausearch/ls -Z evidence for it. A follow-up run using this
+# test (a61990ea-0d68-4790-9891-0d45bc3a8f2f) CONFIRMED the root cause via
+# a real AVC: `semodule`, transitioned into semanage_t but still carrying
+# the calling sysadm_t session's full clearance RANGE (s0-s15:c0.c1023,
+# not clamped to a single level) is denied `{ map }` (mmap) against
+# test_policy.pp's ordinary, single-level var_t:s0 context -- see the
+# plan description for the full denial and reasoning. Left in the plan
+# so any future selinux-policy fix attempt (or a regression) can be
+# re-verified with real evidence instead of re-guessing.
 #
 # This test runs strictly between /selinux-testsuite/tmt/tests/run/main
 # (order: 3, where the failure happens) and .../unprepare (order: 5,
-# which does not touch /var/log/audit/audit.log) -- so ausearch here still
-# covers the run/main failure. It is purely informational: it always
-# exits 0 and must never gate the plan's pass/fail result, since its only
-# purpose is to capture real evidence for a future selinux-policy ticket
-# (see also mls-testsuite-diag-run-main-evidence in this plan's
-# discover/execute data for how to read the results).
+# excluded below anyway, but this ordering is what let ausearch still
+# cover the run/main failure when this test was first added) -- so
+# ausearch here still covers the run/main failure. It is purely
+# informational: it always exits 0 and must never gate the plan's
+# pass/fail result.
 set -x
 
 # The selinux-testsuite `how: fmf` discover phase clones into a per-run,
