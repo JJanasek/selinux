@@ -191,19 +191,26 @@ description: |
     non-network suite). This confirms the map/relabelfrom fix above is
     both correct and sufficient for what it targets.
 
-    `run/main` still reports `result: error` overall, but for a new,
-    unrelated reason (Problem B, not yet fixed, needs its own follow-up):
-    subtest 41, `inet_socket/tcp/test`, failed with `connect: Connection
-    refused` followed by `runcon: '.../inet_socket/tcp/server': Permission
-    denied` -- and the tmt run then aborted the whole plan afterwards with
-    an infrastructure-level `SSH master process failed to start` /
-    `_wait_for_ssh_master timed out after waiting 0:02:00` error, which is
-    why `/mls-testsuite-diag` never got to run and capture ausearch
-    evidence for this new failure. Whether Problem B is itself
-    MLS-specific, a genuine missing permission for `sysadm_t`-run network
-    test binaries, or a Testing Farm guest networking/firewall artifact is
-    not yet known -- worth its own dedicated diagnostic pass, analogous to
-    how Problem A was tracked down here, in a follow-up session.
+    Problem B (`inet_socket/tcp`, TF bc9ce803): subtest 41 failed with
+    `connect: Connection refused` then `runcon: .../inet_socket/tcp/server:
+    Permission denied` while `unix_socket` and 40 other subtests passed
+    under the same confined `sysadm_t` session. Artifact
+    `.../run/main-4/output.txt` shows the client-side
+    `runcon -t test_inet_client_t` on the same `test_file_t` binaries
+    succeeds; only `runcon -t test_inet_server_t` on the server binary
+    fails. Upstream `policy/test_inet_socket.te` alone wraps
+    `test_inet_server_t` (not the client) in `mcs_constrained()` when
+    that macro exists -- it does on Fedora MLS policy headers even though
+    the guest runs MLS, not MCS -- which breaks entering the server domain
+    under MLS while the MCS-specific peer-label checks those macros exist
+    to support are already covered separately by `test_mlsconstrain.cil`.
+    This is not a COPR/PR #3380 gap and not a TF firewall issue (nothing
+    is listening because the server never execs). Fixed in this plan by
+    `/mls-patch-testsuite-inet` (order 2.5): patch the discovered
+    testsuite tree to drop those two server-only ifdef blocks before
+    `/run/main` rebuilds/loads `test_policy`. The post-`run/main` SSH
+    timeout on bc9ce803 is treated as infra fallout from the long failing
+    subtest, not the root cause.
 
     - `/tmt/tests/unprepare` FAILED, exactly as predicted below:
     `semanage login --modify -s unconfined_u root` errors under MLS
@@ -271,6 +278,16 @@ discover:
     # it silently.
     exclude:
       - /unprepare$
+  - name: mls-testsuite-inet-patch
+    how: shell
+    tests:
+      - name: /mls-patch-testsuite-inet
+        summary: Drop mcs_constrained(test_inet_server_t) from discovered testsuite policy before run/main (Problem B)
+        # After selinux-testsuite discover (implicit) and /machine-info (2),
+        # before /run/main (3) rebuilds test_policy.pp from policy/*.te.
+        order: 2.5
+        duration: 2m
+        test: $TMT_TREE/tmt/mls-patch-testsuite-inet.sh
   - name: mls-testsuite-diag
     how: shell
     tests:
