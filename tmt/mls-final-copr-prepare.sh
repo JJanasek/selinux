@@ -31,9 +31,12 @@ set -eo pipefail
 # (udevnsfs, udevrlimit, udevcgroup, udevkobjectuevent, udevtmpfs -- as
 # udev.te changes, not standalone modules there). It does NOT touch
 # anything related to mlssshpipes (a backport of unrelated upstream commit
-# a589b1b5) or udevptrace (a separate sys_ptrace/noatsecure fix) -- neither
-# module appears anywhere in the PR diff, confirmed by grep. Those two
-# still have no upstream fix and must keep being built/loaded locally here.
+# a589b1b5), udevptrace (a separate sys_ptrace/noatsecure fix), or
+# mlssemanageaccess (checkpolicy_t/semanage_t missing map/relabelfrom
+# access under MLS, found via the real selinux-testsuite run -- see
+# mls-final-copr-test.fmf) -- none of these three modules appears
+# anywhere in the PR diff. All three still have no upstream fix and must
+# keep being built/loaded locally here.
 reboot_count="${TMT_REBOOT_COUNT:-0}"
 
 case "$reboot_count" in
@@ -127,21 +130,33 @@ CICFG
     # Reset cloud-init state to force a full run under MLS
     cloud-init clean --logs
 
-    # --- Only the two fixes NOT part of PR #3380 still need local
-    # build/load: mlssshpipes and udevptrace. cloudform and the other 5
-    # udev_t fixes are now expected to already be baked into the
-    # COPR-built selinux-policy-mls package installed above. ---
+    # --- The fixes NOT part of PR #3380 still need local build/load:
+    # mlssshpipes, udevptrace, and mlssemanageaccess. cloudform and the
+    # other 5 udev_t fixes are now expected to already be baked into the
+    # COPR-built selinux-policy-mls package installed above.
+    #
+    # mlssemanageaccess (tmt/mls-semanage-access-fix/): checkpolicy_t and
+    # semanage_t both get most of their real-world file access under
+    # Fedora's targeted policy from optional_policy(`unconfined_domain
+    # ($1)') in selinuxutil.te -- which never fires under MLS (no
+    # unconfined module there), leaving both domains unable to `map`
+    # generic content (e.g. /etc/ld.so.cache, or a semodule-installed
+    # .pp file) or `relabelfrom` the module store. Confirmed via
+    # ausearch on Testing Farm request
+    # a61990ea-0d68-4790-9891-0d45bc3a8f2f; see mls-final-copr-test.fmf
+    # for the full denial list and reasoning. ---
     dnf install -y policycoreutils-devel
 
     mkdir -p /root/build && cd /root/build
     cp $TMT_TREE/tmt/mls-ssh-pipes-fix/mlssshpipes.te .
     cp $TMT_TREE/tmt/mls-udev-ptrace-fix/udevptrace.te .
+    cp $TMT_TREE/tmt/mls-semanage-access-fix/mlssemanageaccess.te .
 
-    make -f /usr/share/selinux/devel/Makefile mlssshpipes.pp udevptrace.pp
+    make -f /usr/share/selinux/devel/Makefile mlssshpipes.pp udevptrace.pp mlssemanageaccess.pp
 
     # Load modules into the inactive MLS store (-n) without hot-reloading
-    semodule -n -i mlssshpipes.pp udevptrace.pp
-    semodule -l | grep -E '^(mlssshpipes|udevptrace)\b'
+    semodule -n -i mlssshpipes.pp udevptrace.pp mlssemanageaccess.pp
+    semodule -l | grep -E '^(mlssshpipes|udevptrace|mlssemanageaccess)\b'
 
     # Same reboot-into-mls step as the production plan.
     prepare_for_mls_reboot

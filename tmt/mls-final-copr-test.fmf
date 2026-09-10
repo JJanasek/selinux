@@ -120,32 +120,66 @@ description: |
     ```
 
     This IS a real, MLS-specific selinux-policy denial, not a DAC/tooling
-    issue: `semodule` (invoked by `make` running as our `sysadm_t` SSH
-    session) domain-transitions into `semanage_t`, but keeps the calling
-    session's FULL clearance RANGE (`s0-s15:c0.c1023`) as its own running
-    context, instead of being clamped down to a single fixed level via a
-    `range_transition`. `test_policy.pp` itself is an ordinary file with
-    a normal single-point level (`var_t:s0`, exactly what `matchpathcon`
-    predicts). `map` (mmap, which is what `semanage_direct_install_file`
-    uses to read module files -- hence "Permission denied" rather than an
-    AVC-less DAC error) apparently hits a stricter MLS constraint here
-    than a plain read/open would: the diagnostic run also caught the same
-    exact pattern -- a RANGED source denied `{ map }` against a
-    single-level target -- for `checkpolicy_t` (against `/etc/ld.so.cache`,
-    `etc_t:s0`) and for `semanage_t` again (same `etc_t:s0` file), plus a
-    large cascade of `{ relabelfrom }` denials from `semanage_t` against
-    pre-existing `semanage_store_t` module files/dirs (`cil`, `hll`,
-    `lang_ext`, one dir named `accountsd`) immediately before the fatal
-    one -- consistent with `semanage_t` never having a working single-
-    level identity under this MLS policy. This is deliberately NOT fixed
-    here: per this epic's own scope, this candidate fix -- add a
-    `range_transition` clamping `checkpolicy_t`/`semanage_t` (and
-    possibly other admin-tool domains entered from `sysadm_t`) to a
-    single low level, OR relax the constraint gating `{ map }` for these
-    domains/types to dominance (matching plain `read`) instead of
-    equality -- belongs in a separate, dedicated selinux-policy
-    PR/ticket (with real reproduction via this same plan), not bundled
-    into this validation plan.
+    issue. The full deduplicated denial set from the diagnostic run's
+    `ausearch -m AVC,USER_AVC` output (Testing Farm request
+    a61990ea-0d68-4790-9891-0d45bc3a8f2f, ~4300 raw AVC lines collapsed
+    to these distinct patterns):
+
+    ```
+    { map }         sysadm_u:sysadm_r:checkpolicy_t  -> etc_t:file
+    { map }         sysadm_u:sysadm_r:semanage_t     -> etc_t:file
+    { map }         sysadm_u:sysadm_r:semanage_t     -> var_t:file   (fatal one)
+    { relabelfrom } sysadm_u:sysadm_r:semanage_t     -> semanage_store_t:{dir,file}
+                     (one repeat per pre-existing module file/dir in the
+                     store -- hundreds of near-identical lines, same root cause)
+    { noatsecure }  sysadm_u:sysadm_r:sysadm_t       -> {checkpolicy_t,rpm_t,semanage_t}:process
+    { noatsecure }  system_u:system_r:sshd_session_t -> sysadm_t:process
+    { siginh }      (same 4 source/target pairs as noatsecure)
+    { rlimitinh }   sysadm_u:sysadm_r:sysadm_t       -> {checkpolicy_t,rpm_t}:process
+    ```
+
+    The `noatsecure`/`siginh`/`rlimitinh` denials are a red herring: they
+    fire on *every* domain transition in this policy (including
+    `sshd_session_t` -> `sysadm_t`, i.e. the SSH login itself, which
+    plainly works), because `domain_transition_pattern()`
+    (policy/support/misc_patterns.spt) has its
+    `dontaudit $1 $3:process { noatsecure siginh rlimitinh }` line
+    commented out -- these three permissions are ungated AT_SECURE/signal/
+    rlimit-inheritance side effects of execve(), not something that
+    blocks the transition itself. `rpm_t` shows the identical pattern
+    with no functional impact (`dnf install` succeeds throughout this
+    plan) -- confirming it never blocks anything.
+
+    The real blocker is the `map`/`relabelfrom` set. Both `checkpolicy_t`
+    and `semanage_t` were kept at sysadm_t's full clearance range
+    (`s0-s15:c0.c1023`) as their own context -- but that is *not* a bug:
+    reading base refpolicy's `policy/mls` constraints directly, `map` on
+    file class has no `mlsconstrain` entry at all (so it is a plain
+    type-enforcement permission, unaffected by MLS ranges), and the
+    `relabelfrom` targets here are single-level (`s0`, no categories) so
+    the "single level file write ops" constraint's `l1 eq l2` clause
+    trivially holds (`s0 eq s0`) regardless of `checkpolicy_t`/
+    `semanage_t`'s own range -- no `range_transition` would change either
+    outcome. The actual gap: reading
+    `policy/modules/system/selinuxutil.te`, both domains get essentially
+    all of their real-world "read/relabel arbitrary admin content"
+    access from `optional_policy(\`unconfined_domain($1)')` -- MLS ships
+    no `unconfined` module at all, so that block never fires there,
+    leaving both domains without `map` on generic content or
+    `relabelfrom` on the module store when actually invoked (as
+    intended) from the confined `sysadm_t` instead of targeted's
+    unconfined root login.
+
+    FIXED locally (this epic's scope: no selinux-policy PR/push, just a
+    standalone module on top of the COPR build, same mechanism as
+    `mlssshpipes`/`udevptrace`): `tmt/mls-semanage-access-fix/
+    mlssemanageaccess.te` grants exactly the four missing rules above
+    (`checkpolicy_t`/`semanage_t` `map` on `etc_t`, `semanage_t` `map` on
+    `var_t`, `semanage_t` `relabelfrom` on `semanage_store_t` dir+file),
+    built/loaded by `mls-final-copr-prepare.sh` alongside the other two
+    non-upstreamed local fixes. Re-run as Testing Farm request
+    <PENDING -- see below for the actual result> to confirm `run/main`
+    now gets past the `semodule -i test_policy.pp` step.
 
     - `/tmt/tests/unprepare` FAILED, exactly as predicted below:
     `semanage login --modify -s unconfined_u root` errors under MLS
