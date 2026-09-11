@@ -41,16 +41,24 @@ description: |
     discovers and runs the real, canonical
     https://github.com/SELinuxProject/selinux-testsuite against this same
     MLS-enforcing, COPR-validated guest (see the second `discover` phase
-    below) -- this repo's own tmt/plans.fmf `/ci` plan already wires up
-    that same upstream testsuite via `how: fmf`, but only for a *separate*
-    validation track: targeted policy + SELinux userspace rebuilt from
-    this git checkout (STS_ROOT_DOMAIN: unconfined_t). That track is
-    orthogonal to this plan (stock Fedora userspace + the COPR-built
-    selinux-policy-mls RPM under test), so instead of reusing it as-is
-    this plan adds its own `fmf` discover phase, without the
-    /prepare-selinux-userspace build-from-git step (irrelevant here --
-    we're validating the shipped RPM policy, not this checkout's
-    userspace), and with STS_ROOT_DOMAIN set to sysadm_t instead of
+    below). The testsuite checkout is **never modified** -- no patching of
+    its policy sources, Makefiles, or tests. Only the **environment** is
+    prepared here: COPR-built selinux-policy-mls (PR under test), MLS
+    switch + user mapping via `prepare_for_mls` / `mls-final-copr-
+    prepare.sh`, optional local `.te` modules loaded in `prepare` on top
+    of that RPM (same pattern as `mlssshpipes` / `udevptrace` /
+    `mlssemanageaccess`), `STS_ROOT_DOMAIN: sysadm_t`, and FMF-level
+    excludes (e.g. `/unprepare$`) where upstream cleanup is incompatible
+    with MLS.
+
+    This repo's own tmt/plans.fmf `/ci` plan wires up the same upstream
+    testsuite via `how: fmf`, but only for a *separate* validation track:
+    targeted policy + SELinux userspace rebuilt from this git checkout
+    (STS_ROOT_DOMAIN: unconfined_t). That track is orthogonal to this
+    plan (stock Fedora userspace + the COPR-built selinux-policy-mls RPM
+    under test), so instead of reusing `/ci` as-is this plan adds its own
+    `fmf` discover phase, without the /prepare-selinux-userspace build-
+    from-git step, and with STS_ROOT_DOMAIN set to sysadm_t instead of
     unconfined_t.
 
     sysadm_t (not unconfined_t) is the right root domain for MLS: this
@@ -191,36 +199,22 @@ description: |
     non-network suite). This confirms the map/relabelfrom fix above is
     both correct and sufficient for what it targets.
 
-    Problem B (`inet_socket/tcp`, TF bc9ce803): subtest 41 failed with
-    `connect: Connection refused` then `runcon: .../inet_socket/tcp/server:
-    Permission denied` while `unix_socket` and 40 other subtests passed
-    under the same confined `sysadm_t` session. Artifact
-    `.../run/main-4/output.txt` shows the client-side
-    `runcon -t test_inet_client_t` on the same `test_file_t` binaries
-    succeeds; only `runcon -t test_inet_server_t` on the server binary
-    fails. Upstream `policy/test_inet_socket.te` alone wraps
-    `test_inet_server_t` (not the client) in `mcs_constrained()` when
-    that macro exists -- it does on Fedora MLS policy headers even though
-    the guest runs MLS, not MCS -- which breaks entering the server domain
-    under MLS while the MCS-specific peer-label checks those macros exist
-    to support are already covered separately by `test_mlsconstrain.cil`.
-    This is not a COPR/PR #3380 gap and not a TF firewall issue (nothing
-    is listening because the server never execs). Fixed in this plan by
-    `/mls-patch-testsuite-inet` (order 0.5 in the
-    `mls-boot-cloudinit` discover phase): patch the fmf-discovered
-    testsuite tree to drop those two server-only ifdef blocks before the
-    separate `selinux-testsuite` discover phase executes at all. TMT runs
-    each discover phase's tests as a batch (see execute/internal.py:
-    one enqueue per discover plugin), so `order: 2.5` in a later shell
-    discover phase still ran *after* `/prepare-system` and `/run/main`
-    had already built/loaded `test_policy.pp` from the unpatched
-    `test_inet_socket.te` (TF 291f8d79). Order 0.5 in the first phase
-    runs after discover has cloned the tree but before any testsuite test
-    -- including `/prepare-system` (order 1), which does not build policy
-    itself but precedes `/run/main` (order 3, `make -C .. test` →
-    `make -C policy load`). The post-`run/main` SSH timeout on bc9ce803
-    is treated as infra fallout from the long failing subtest, not the
-    root cause.
+    Problem B (`inet_socket/tcp`, TF bc9ce803): with the **unmodified**
+    upstream testsuite, subtest 41 failed with `connect: Connection
+    refused` then `runcon: .../inet_socket/tcp/server: Permission denied`
+    while `unix_socket` and 40 other subtests passed under the same
+    confined `sysadm_t` session. The client `runcon -t test_inet_client_t`
+    on the same `test_file_t` binaries succeeds; only the server domain
+    fails. This is not a COPR/PR #3380 gap and not a TF firewall issue
+    (nothing listens because the server never execs). It comes from the
+    testsuite's own test policy (`mcs_constrained(test_inet_server_t)` in
+    upstream `policy/test_inet_socket.te` when Fedora MLS headers expose
+    that macro). **This plan does not patch the testsuite checkout** to
+    work around that; fixing it belongs in selinux-policy and/or upstream
+    selinux-testsuite. The diagnostic discover step below still dumps
+    `ausearch`, full `journalctl -b`, and `dmesg` after `/run/main` so
+    denials are not missed when audit alone is empty (same lesson as the
+    udev/nsfs investigation).
 
     - `/tmt/tests/unprepare` FAILED, exactly as predicted below:
     `semanage login --modify -s unconfined_u root` errors under MLS
@@ -272,15 +266,6 @@ discover:
         order: 0
         duration: 10m
         test: $TMT_TREE/tmt/mls-final-copr-execute.sh
-      - name: /mls-patch-testsuite-inet
-        summary: Drop mcs_constrained(test_inet_server_t) from discovered testsuite policy before testsuite execute phase (Problem B)
-        # Same discover phase as the boot check so this runs before TMT
-        # starts the selinux-testsuite discover phase's batch (where
-        # /prepare-system and /run/main live). order 0.5 is after boot
-        # (0) but before testsuite /prepare-system (1).
-        order: 0.5
-        duration: 2m
-        test: $TMT_TREE/tmt/mls-patch-testsuite-inet.sh
   - name: selinux-testsuite
     how: fmf
     url: https://github.com/SELinuxProject/selinux-testsuite
@@ -300,13 +285,6 @@ discover:
   - name: mls-testsuite-diag
     how: shell
     tests:
-      - name: /mls-inet-runcon-diag
-        summary: Early test_policy load + runcon repro + journal/dmesg/ausearch (Problem B); informational
-        # After /prepare-system (order 1), before /run/main (order 3): captures
-        # AVCs for test_inet_server_t runcon even when run/main later drops SSH.
-        order: 2.9
-        duration: 15m
-        test: $TMT_TREE/tmt/mls-inet-runcon-diag.sh
       - name: /mls-testsuite-diag-run-main-evidence
         summary: Capture real ausearch/ls-Z/id-Z evidence for the selinux-testsuite run/main "test_policy.pp Permission denied" failure (Problem A); purely informational, never blocks the plan
         # Must run after /selinux-testsuite/tmt/tests/run/main (order: 3,
