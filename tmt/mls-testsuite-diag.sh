@@ -69,8 +69,31 @@ echo "=== AVC/USER_AVC denials since /prepare-system reset the audit log ==="
 # (not set here, but kept consistent/defensive).
 ausearch -m AVC,USER_AVC --input-logs -ts recent -i 2>&1 || true
 
+echo "=== AVC/USER_AVC filtered: test_inet / runcon / inet_socket ==="
+ausearch -m AVC,USER_AVC --input-logs -ts recent -i 2>&1 | \
+    grep -i -E 'test_inet|runcon|inet_socket|test_file_t.*execute|mcs_constrained' || true
+
 echo "=== full recent audit trail mentioning semodule/test_policy/semanage (any DAC-only denials, USER_* records, etc. that -m AVC,USER_AVC alone might miss) ==="
 ausearch --input-logs -ts recent -i 2>&1 | grep -i -C5 'semodule\|test_policy\|semanage' || true
+
+echo "=== journalctl -b (full boot journal): avc|selinux|denied|test_inet|runcon ==="
+journalctl -b --no-pager 2>&1 | \
+    grep -i -E 'avc|selinux.*denied|test_inet|runcon|inet_socket' | tail -n 150 || true
+
+echo "=== dmesg / kernel audit ring: avc|denied|test_inet|runcon ==="
+dmesg 2>/dev/null | grep -i -E 'avc|denied|test_inet|runcon' | tail -n 80 || true
+
+if sts_tests_dir=$(find /var/ARTIFACTS /var/tmp -maxdepth 8 -type d \
+    -path '*/discover/selinux-testsuite/tests' 2>/dev/null | head -n1); then
+    tcp_server="$sts_tests_dir/tests/inet_socket/tcp/server"
+    if [ -x "$tcp_server" ]; then
+        echo "=== post-run/main runcon repro (test_inet_server_t /bin/true) ==="
+        runcon -t test_inet_server_t /bin/true 2>&1 || true
+        echo "=== ausearch after runcon repro (inet/runcon filter) ==="
+        ausearch -m AVC,USER_AVC --input-logs -ts recent -i 2>&1 | \
+            grep -i -E 'test_inet|runcon|execute|transition|setexec' || true
+    fi
+fi
 
 # Always pass: this test only exists to collect evidence, never to gate
 # the plan's result.

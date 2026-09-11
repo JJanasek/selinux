@@ -300,6 +300,13 @@ discover:
   - name: mls-testsuite-diag
     how: shell
     tests:
+      - name: /mls-inet-runcon-diag
+        summary: Early test_policy load + runcon repro + journal/dmesg/ausearch (Problem B); informational
+        # After /prepare-system (order 1), before /run/main (order 3): captures
+        # AVCs for test_inet_server_t runcon even when run/main later drops SSH.
+        order: 2.9
+        duration: 15m
+        test: $TMT_TREE/tmt/mls-inet-runcon-diag.sh
       - name: /mls-testsuite-diag-run-main-evidence
         summary: Capture real ausearch/ls-Z/id-Z evidence for the selinux-testsuite run/main "test_policy.pp Permission denied" failure (Problem A); purely informational, never blocks the plan
         # Must run after /selinux-testsuite/tmt/tests/run/main (order: 3,

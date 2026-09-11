@@ -55,6 +55,57 @@ if [ "${#candidates[@]}" -eq 0 ]; then
     exit 1
 fi
 
+cil_marker='mls-final-copr-test: test_inet_server_mls.cil on semodule -i line'
+semodule_line='test_policy/test_policy.pp test_mlsconstrain.cil test_overlay_defaultrange.cil test_glblub.cil'
+semodule_line_patched="test_policy/test_policy.pp test_mlsconstrain.cil test_inet_server_mls.cil test_overlay_defaultrange.cil test_glblub.cil"
+
+install_cil_and_patch_makefile() {
+    local policy_dir="$1"
+    local cil_src="$TMT_TREE/tmt/mls-inet-server-fix/test_inet_server_mls.cil"
+    local cil_dst="$policy_dir/test_inet_server_mls.cil"
+    local makefile="$policy_dir/Makefile"
+
+    if [ ! -f "$cil_src" ]; then
+        echo "FAIL: missing $cil_src" >&2
+        exit 1
+    fi
+    cp "$cil_src" "$cil_dst"
+    echo "Installed $cil_dst"
+
+    if command -v secilcheck >/dev/null 2>&1; then
+        secilcheck "$cil_dst" && echo "secilcheck OK: $cil_dst"
+    fi
+
+    if [ ! -f "$makefile" ]; then
+        echo "FAIL: missing $makefile" >&2
+        exit 1
+    fi
+    if grep -qF "$cil_marker" "$makefile"; then
+        echo "Makefile already patched: $makefile"
+        return 0
+    fi
+    python3 - "$makefile" "$semodule_line" "$semodule_line_patched" "$cil_marker" <<'PY'
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+old = sys.argv[2]
+new = sys.argv[3]
+marker = sys.argv[4]
+text = path.read_text()
+if old not in text:
+    sys.exit(f"FAIL: semodule install line not found in {path}; update mls-patch-testsuite-inet.sh")
+path.write_text(text.replace(old, new, 1))
+lines = path.read_text().splitlines()
+for i, line in enumerate(lines):
+    if new in line:
+        lines.insert(i, f"# {marker}")
+        break
+path.write_text("\n".join(lines) + "\n")
+print(f"Patched {path}")
+PY
+}
+
 for sts_policy in "${candidates[@]}"; do
     patch_one "$sts_policy"
     if grep -qE 'mcs_constrained\(test_inet_server_t\)|mcs_untrusted_proc\(test_inet_server_t\)' \
@@ -67,4 +118,5 @@ for sts_policy in "${candidates[@]}"; do
         exit 1
     fi
     echo "Verified: $sts_policy has no mcs_* on test_inet_server_t"
+    install_cil_and_patch_makefile "$(dirname "$sts_policy")"
 done

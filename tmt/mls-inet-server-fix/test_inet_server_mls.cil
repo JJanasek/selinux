@@ -1,0 +1,6 @@
+; Loaded with test_policy.pp (see mls-patch-testsuite-inet.sh).
+; Ensures test_inet_server_t is not MCS-constrained under MLS so sysadm_t
+; can runcon into the inet_socket/tcp server domain.
+
+(type test_inet_server_t)
+(typeattributeset subtract test_inet_server_t mcs_constrained_type)
