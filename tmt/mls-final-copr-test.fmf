@@ -82,14 +82,13 @@ description: |
     policy itself is just semodule-loaded on top of whatever base policy
     is already active, so it does not assume/require targeted policy.
 
-    The testsuite's own tmt/plans.fmf `/prepare-system` test (order: 1)
-    only runs its STS_ROOT_DOMAIN/STS_KERNEL setup (and a possible
-    tmt-reboot) when `$TMT_REBOOT_COUNT -eq 0`; since this plan's own
-    prepare step already consumed 2 reboots switching to MLS+Enforcing
-    before execute even starts, that setup is a no-op here by the time
-    it runs -- harmless, since the sysadm_login boolean is already on
-    from this plan's own prepare script and MLS's root login already
-    maps to sysadm_u by default.
+    Upstream `/prepare-system` is excluded below: it always runs at
+    execute-time with `$TMT_REBOOT_COUNT -eq 0` (separate from our
+    prepare-phase reboot counter), repeats `ssh_sysadm_login`/`sysadm_u`
+    setup, and calls `tmt-reboot` again. On an MLS guest that third
+    reboot often exceeds tmt's SSH recovery window (TF request
+    22c3896a: guest reboot timeout after kernel-devel install). Our
+    prepare already applied the same sysadm mappings and booleans.
 
     Same filter as the existing `/ci` plan
     (`tag:-ci & tag:-nfs`): excludes the CI-only meta-tests (`/avc-check`,
@@ -239,10 +238,10 @@ environment:
   PR_NUMBER: "3380"
   # See the description above: sysadm_t (not unconfined_t) is the correct
   # root domain for an MLS guest, and matches this plan's own prepare
-  # script (ssh_sysadm_login boolean already on). STS_KERNEL is a no-op
-  # here (see above) but set explicitly for documentation purposes.
+  # script (ssh_sysadm_login boolean already on). STS_KERNEL unused while
+  # /prepare-system is excluded.
   STS_ROOT_DOMAIN: sysadm_t
-  STS_KERNEL: default
+  STS_KERNEL: local
 
 prepare:
   - name: Install MLS policy from PR COPR build, switch to MLS and Enforcing (2 reboots)
@@ -277,6 +276,7 @@ discover:
     # code) is to just not run it, rather than let it fail loudly or mask
     # it silently.
     exclude:
+      - /prepare-system$
       - /unprepare$
   - name: mls-testsuite-diag
     how: shell
