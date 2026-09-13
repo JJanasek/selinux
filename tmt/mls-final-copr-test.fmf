@@ -4,9 +4,11 @@ description: |
     ${PR_NUMBER} (packit/fedora-selinux-selinux-policy-${PR_NUMBER}), switch
     the guest to MLS enforcing, run upstream selinux-testsuite unmodified.
 
-    Set PR_NUMBER via environment (default 3380). Pin uses repo-scoped NVR
-    query so dnf does not pick a newer build from Fedora repos. Prefer
-    compose Fedora-44 when validating a PR built for that chroot.
+    Install policy from COPR: either Packit per-PR (`PR_NUMBER`, default
+    3380) or a fork project (`COPR_REPO=owner/project`, no upstream PR).
+    With Testing Farm `--fedora-copr-build id:chroot`, set
+    `SKIP_COPR_INSTALL=1` so prepare only switches to MLS. Prefer
+    Fedora-44 when the COPR chroot is fedora-44-x86_64.
 
     Policy fixes (cloud-init, udev, ssh pipes, semanage/checkpolicy under
     MLS, etc.) must be in the COPR RPM — no guest-local semodule build.
@@ -16,7 +18,6 @@ description: |
     ssh_sysadm_login), /unprepare$ (tries unconfined_u on MLS).
 
 environment:
-  PR_NUMBER: "3380"
   STS_ROOT_DOMAIN: sysadm_t
   STS_KERNEL: local
 

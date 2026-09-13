@@ -2,36 +2,46 @@
 set -eo pipefail
 
 # MLS prepare for COPR-validated selinux-policy PRs (mls-final-copr-test.fmf).
-# Requires PR_NUMBER. Flow: pin COPR selinux-policy-mls (MLS fixes must be in
-# that RPM) → MLS switch → two reboots (permissive relabel, then enforcing).
+# Install selinux-policy-mls from COPR (Packit PR or fork COPR_REPO), then MLS
+# switch and two reboots. Set SKIP_COPR_INSTALL=1 when Testing Farm already
+# installed the build via --fedora-copr-build.
 reboot_count="${TMT_REBOOT_COUNT:-0}"
 
 case "$reboot_count" in
 0)
-    copr_project="fedora-selinux-selinux-policy-${PR_NUMBER:?PR_NUMBER must be set}"
-    dnf install -y 'dnf-command(copr)' || true
-    dnf -y copr enable "packit/${copr_project}"
+    if [ "${SKIP_COPR_INSTALL:-0}" != 1 ]; then
+        if [ -n "${COPR_REPO:-}" ]; then
+            copr_slug="${COPR_REPO}"
+            copr_repoid_match="${COPR_REPO##*/}"
+        else
+            copr_repoid_match="fedora-selinux-selinux-policy-${PR_NUMBER:?set PR_NUMBER or COPR_REPO}"
+            copr_slug="packit/${copr_repoid_match}"
+        fi
+        dnf install -y 'dnf-command(copr)' || true
+        dnf -y copr enable "${copr_slug}"
 
-    copr_repoid=$(dnf -y repolist --enabled | awk -v p="$copr_project" '$0 ~ p {print $1; exit}')
-    if [ -z "$copr_repoid" ]; then
-        echo "FAIL: no enabled repo for packit/${copr_project}" >&2
-        exit 1
-    fi
+        copr_repoid=$(dnf -y repolist --enabled | awk -v p="$copr_repoid_match" '$0 ~ p {print $1; exit}')
+        if [ -z "$copr_repoid" ]; then
+            echo "FAIL: no enabled repo for ${copr_slug}" >&2
+            exit 1
+        fi
 
-    # dnf picks highest EVR across all repos; pin the COPR build explicitly.
-    # dnf5 repoquery --qf needs an explicit \n or multiple NVRs glue together.
-    pinned_nvr=$(dnf -y repoquery --repo="$copr_repoid" --qf '%{name}-%{evr}.%{arch}\n' selinux-policy-mls | sort -V | tail -n1)
-    if [ -z "$pinned_nvr" ]; then
-        echo "FAIL: no selinux-policy-mls in repo ${copr_repoid}" >&2
-        exit 1
-    fi
-    echo "Installing COPR build: ${pinned_nvr}"
-    dnf install -y "$pinned_nvr" policycoreutils-python-utils audit
+        pinned_nvr=$(dnf -y repoquery --repo="$copr_repoid" --qf '%{name}-%{evr}.%{arch}\n' selinux-policy-mls | sort -V | tail -n1)
+        if [ -z "$pinned_nvr" ]; then
+            echo "FAIL: no selinux-policy-mls in repo ${copr_repoid}" >&2
+            exit 1
+        fi
+        echo "Installing COPR build: ${pinned_nvr}"
+        dnf install -y "$pinned_nvr" policycoreutils-python-utils audit
 
-    if ! rpm -q selinux-policy-mls | grep -qF ".pr${PR_NUMBER}."; then
-        echo "FAIL: selinux-policy-mls is not from PR #${PR_NUMBER} COPR" >&2
-        rpm -q selinux-policy-mls >&2
-        exit 1
+        if [ -n "${PR_NUMBER:-}" ] && ! rpm -q selinux-policy-mls | grep -qF ".pr${PR_NUMBER}."; then
+            echo "FAIL: selinux-policy-mls is not from PR #${PR_NUMBER} COPR" >&2
+            rpm -q selinux-policy-mls >&2
+            exit 1
+        fi
+    else
+        echo "SKIP_COPR_INSTALL=1: using selinux-policy-mls already on guest: $(rpm -q selinux-policy-mls)"
+        dnf install -y policycoreutils-python-utils audit
     fi
 
     # shellcheck source=/dev/null
