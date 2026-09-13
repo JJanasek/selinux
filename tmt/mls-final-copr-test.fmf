@@ -1,299 +1,39 @@
-summary: MLS Enforcing-Mode Boot Validation (COPR-based validation of PR #3380, EXPERIMENTAL)
+summary: selinux-testsuite on MLS enforcing with COPR selinux-policy-mls
 description: |
-    EXPERIMENTAL sibling of tmt/mls-final.fmf (same directory). Validates
-    upstream PR #3380
-    (https://github.com/fedora-selinux/selinux-policy/pull/3380, "Enable
-    cloud-init under MLS", 2 commits: the cloud-init fix + the udev_t
-    MLS-boot-hang fix) as the REAL Packit/COPR-built selinux-policy-mls
-    RPM package, instead of manually building/loading standalone .te
-    modules on top of an unpatched package.
+    Install selinux-policy-mls from Packit COPR for selinux-policy PR
+    ${PR_NUMBER} (packit/fedora-selinux-selinux-policy-${PR_NUMBER}), switch
+    the guest to MLS enforcing, run upstream selinux-testsuite unmodified.
 
-    Enables the Packit-managed COPR repo
-    packit/fedora-selinux-selinux-policy-3380 (confirmed via the GitHub
-    API against PR #3380 HEAD c3fbc760b9: rpm-build succeeded for
-    fedora-44-x86_64, fedora-45-x86_64 and fedora-rawhide-x86_64) before
-    installing selinux-policy-mls. Since dnf/dnf5 picks the highest EVR
-    across ALL enabled repos (not just the newly-enabled one), and a
-    fast-moving compose can already have a newer selinux-policy-mls build
-    than Packit's PR snapshot (observed live on Fedora-Rawhide), the
-    prepare script pins the exact NVR Packit built for PR #3380 on the
-    fedora-44-x86_64 chroot -- so run this plan against --compose
-    Fedora-44, not Fedora-Rawhide.
+    Set PR_NUMBER via environment (default 3380). Pin uses repo-scoped NVR
+    query so dnf does not pick a newer build from Fedora repos. Prefer
+    compose Fedora-44 when validating a PR built for that chroot.
 
-    The COPR RPM under test must already include all MLS policy fixes needed
-    for boot, cloud-init, ssh/sysadm login, semodule/checkpolicy, and
-    udev (cloudform/udev in the policy PR under test, plus follow-up
-    selinux-policy changes for ssh fifo pipes, udev sys_ptrace/initrc
-    transitions, and semanage_t/checkpolicy_t map/relabelfrom under MLS).
-    This plan does not build or load standalone `.te` modules on the guest.
+    Policy fixes (cloud-init, udev, ssh pipes, semanage/checkpolicy under
+    MLS, etc.) must be in the COPR RPM — no guest-local semodule build.
 
-    This is a one-off validation test, NOT a replacement for the
-    production tmt/mls-final.fmf plan/mechanism. Do not treat a pass here
-    as a reason to change mls-final.fmf without a separate, explicit
-    decision to do so.
-
-    Requires environment variable PR_NUMBER (the selinux-policy PR number
-    whose Packit-managed COPR build, packit/fedora-selinux-selinux-policy-
-    ${PR_NUMBER}, should be installed from). Defaults to 3380 below for
-    manual/ad-hoc runs; a CI caller (e.g. `testing-farm request`) should
-    override it with `-e PR_NUMBER=<n>` / `--tmt-environment PR_NUMBER=<n>`
-    for whichever PR is actually under test.
-
-    In addition to the boot/cloud-init/AVC check above, this plan also
-    discovers and runs the real, canonical
-    https://github.com/SELinuxProject/selinux-testsuite against this same
-    MLS-enforcing, COPR-validated guest (see the second `discover` phase
-    below). The testsuite checkout is **never modified** -- no patching of
-    its policy sources, Makefiles, or tests. Only the **environment** is
-    prepared here: COPR-built selinux-policy-mls (PR under test), MLS
-    switch + user mapping via `prepare_for_mls` / `mls-final-copr-
-    prepare.sh`, `STS_ROOT_DOMAIN: sysadm_t`, and FMF-level
-    excludes (e.g. `/unprepare$`) where upstream cleanup is incompatible
-    with MLS.
-
-    This repo's own tmt/plans.fmf `/ci` plan wires up the same upstream
-    testsuite via `how: fmf`, but only for a *separate* validation track:
-    targeted policy + SELinux userspace rebuilt from this git checkout
-    (STS_ROOT_DOMAIN: unconfined_t). That track is orthogonal to this
-    plan (stock Fedora userspace + the COPR-built selinux-policy-mls RPM
-    under test), so instead of reusing `/ci` as-is this plan adds its own
-    `fmf` discover phase, without the /prepare-selinux-userspace build-
-    from-git step, and with STS_ROOT_DOMAIN set to sysadm_t instead of
-    unconfined_t.
-
-    sysadm_t (not unconfined_t) is the right root domain for MLS: this
-    plan's own prepare script already turns on the `ssh_sysadm_login`
-    boolean (needed for root's SSH session, which maps to
-    sysadm_u:sysadm_r:sysadm_t under MLS, to transition out of
-    sshd_session_t at all -- see mls-final-copr-prepare.sh). MLS/strict
-    policy has no unconfined_t. STS_ROOT_DOMAIN=sysadm_t is itself an
-    upstream-supported, CI-tested value (selinux-testsuite's own
-    .github/workflows/checks.yml matrix runs `domain: [unconfined_t,
-    sysadm_t]`), and runtests.pl explicitly accepts running as root in
-    sysadm_r (`$role ne "sysadm_r" && $role ne "unconfined_r" && $role ne
-    "system_r"`). The testsuite is also directly MLS-aware, not just
-    targeted/MCS-oriented: it auto-detects the running policy type via
-    its own tests/pol_detect (NON-MLS/MCS/MLS, based on the kernel's
-    initial SID level) and both tests/Makefile and policy/Makefile branch
-    on that ($(POL_TYPE) = MLS/MCS) to build extra MLS/MCS-only test
-    modules (test_glblub.cil for MLS, plus test_add_levels.cil for MCS)
-    on top of the always-built test_mlsconstrain.cil -- i.e. it ships
-    real, dedicated MLS test coverage, not something bolted on. The test
-    policy itself is just semodule-loaded on top of whatever base policy
-    is already active, so it does not assume/require targeted policy.
-
-    Upstream `/prepare-system` is excluded below: it always runs at
-    execute-time with `$TMT_REBOOT_COUNT -eq 0` (separate from our
-    prepare-phase reboot counter), repeats `ssh_sysadm_login`/`sysadm_u`
-    setup, and calls `tmt-reboot` again. On an MLS guest that third
-    reboot often exceeds tmt's SSH recovery window (TF request
-    22c3896a: guest reboot timeout after kernel-devel install). Our
-    prepare already applied the same sysadm mappings and booleans.
-
-    Same filter as the existing `/ci` plan
-    (`tag:-ci & tag:-nfs`): excludes the CI-only meta-tests (`/avc-check`,
-    `/gitignore-coverage`) and the NFS subtest, which need infrastructure
-    (a real nfs-server, git checkout cleanliness) irrelevant to this VM.
-
-    RESULTS FROM A REAL RUN (Testing Farm request
-    d1bebfbc-9770-4a68-a193-9dbe285ab1cd,
-    https://artifacts.dev.testing-farm.io/d1bebfbc-9770-4a68-a193-9dbe285ab1cd):
-    confirmed the whole mechanism above works end-to-end (COPR install,
-    MLS switch, 2 reboots, our own boot/cloud-init/AVC check all PASS),
-    and surfaced 2 real, MLS-specific problems in the upstream testsuite
-    run itself -- neither is a problem with this plan's own prepare/COPR
-    logic:
-
-    - `/tmt/tests/run/main` (the actual selinux-testsuite regression
-    suite) ERRORED before running a single real test case:
-    `semodule -i test_policy/test_policy.pp ...` failed with
-    `libsemanage.semanage_direct_install_file: Unable to read file
-    test_policy/test_policy.pp. (Permission denied).` -- immediately
-    after that same file was freshly built by the preceding `make -C
-    policy load` step in the very same test/process. That first real run
-    captured no ausearch/`ls -Z` evidence for it, so a follow-up
-    diagnostic-only discover phase (`mls-testsuite-diag`, see below) was
-    added and re-run (Testing Farm request
-    a61990ea-0d68-4790-9891-0d45bc3a8f2f,
-    https://artifacts.dev.testing-farm.io/a61990ea-0d68-4790-9891-0d45bc3a8f2f)
-    specifically to capture hard evidence -- CONFIRMED, root cause now
-    known with certainty via `ausearch -m AVC,USER_AVC`:
-
-    ```
-    avc: denied { map } for pid=1760 comm=semodule
-      path=.../tests/policy/test_policy/test_policy.pp
-      scontext=sysadm_u:sysadm_r:semanage_t:s0-s15:c0.c1023
-      tcontext=sysadm_u:object_r:var_t:s0 tclass=file permissive=0
-    ```
-
-    This IS a real, MLS-specific selinux-policy denial, not a DAC/tooling
-    issue. The full deduplicated denial set from the diagnostic run's
-    `ausearch -m AVC,USER_AVC` output (Testing Farm request
-    a61990ea-0d68-4790-9891-0d45bc3a8f2f, ~4300 raw AVC lines collapsed
-    to these distinct patterns):
-
-    ```
-    { map }         sysadm_u:sysadm_r:checkpolicy_t  -> etc_t:file
-    { map }         sysadm_u:sysadm_r:semanage_t     -> etc_t:file
-    { map }         sysadm_u:sysadm_r:semanage_t     -> var_t:file   (fatal one)
-    { relabelfrom } sysadm_u:sysadm_r:semanage_t     -> semanage_store_t:{dir,file}
-                     (one repeat per pre-existing module file/dir in the
-                     store -- hundreds of near-identical lines, same root cause)
-    { noatsecure }  sysadm_u:sysadm_r:sysadm_t       -> {checkpolicy_t,rpm_t,semanage_t}:process
-    { noatsecure }  system_u:system_r:sshd_session_t -> sysadm_t:process
-    { siginh }      (same 4 source/target pairs as noatsecure)
-    { rlimitinh }   sysadm_u:sysadm_r:sysadm_t       -> {checkpolicy_t,rpm_t}:process
-    ```
-
-    The `noatsecure`/`siginh`/`rlimitinh` denials are a red herring: they
-    fire on *every* domain transition in this policy (including
-    `sshd_session_t` -> `sysadm_t`, i.e. the SSH login itself, which
-    plainly works), because `domain_transition_pattern()`
-    (policy/support/misc_patterns.spt) has its
-    `dontaudit $1 $3:process { noatsecure siginh rlimitinh }` line
-    commented out -- these three permissions are ungated AT_SECURE/signal/
-    rlimit-inheritance side effects of execve(), not something that
-    blocks the transition itself. `rpm_t` shows the identical pattern
-    with no functional impact (`dnf install` succeeds throughout this
-    plan) -- confirming it never blocks anything.
-
-    The real blocker is the `map`/`relabelfrom` set. Both `checkpolicy_t`
-    and `semanage_t` were kept at sysadm_t's full clearance range
-    (`s0-s15:c0.c1023`) as their own context -- but that is *not* a bug:
-    reading base refpolicy's `policy/mls` constraints directly, `map` on
-    file class has no `mlsconstrain` entry at all (so it is a plain
-    type-enforcement permission, unaffected by MLS ranges), and the
-    `relabelfrom` targets here are single-level (`s0`, no categories) so
-    the "single level file write ops" constraint's `l1 eq l2` clause
-    trivially holds (`s0 eq s0`) regardless of `checkpolicy_t`/
-    `semanage_t`'s own range -- no `range_transition` would change either
-    outcome. The actual gap: reading
-    `policy/modules/system/selinuxutil.te`, both domains get essentially
-    all of their real-world "read/relabel arbitrary admin content"
-    access from `optional_policy(\`unconfined_domain($1)')` -- MLS ships
-    no `unconfined` module at all, so that block never fires there,
-    leaving both domains without `map` on generic content or
-    `relabelfrom` on the module store when actually invoked (as
-    intended) from the confined `sysadm_t` instead of targeted's
-    unconfined root login.
-
-    Fix belongs in selinux-policy (MLS rules for checkpolicy_t/semanage_t
-    when `unconfined_domain` is absent), not in a guest-local module.
-    Prototype rules were validated via standalone modules during
-    development; COPR must ship the real refpolicy change.
-
-    CONFIRMED FIXED when those rules are present (Testing Farm request
-    bc9ce803-74e3-460f-a8d3-32a0e7e6157e,
-    https://artifacts.dev.testing-farm.io/bc9ce803-74e3-460f-a8d3-32a0e7e6157e):
-    `make -C policy load`'s `semodule -i test_policy/test_policy.pp ...`
-    now succeeds with zero denials (no more "Permission denied"), and
-    `run/main` goes on to actually execute the regression suite for the
-    first time ever under this plan -- 41 subtests ran, 40 passed
-    (`domain_trans`, `entrypoint`, `execshare`, `exectrace`, `mmap`,
-    `unix_socket`, `ptrace`, `dyntrans`, `bounds`, ... -- the entire
-    non-network suite). This confirms the map/relabelfrom fix above is
-    both correct and sufficient for what it targets.
-
-    Problem B (`inet_socket/tcp`, TF bc9ce803): with the **unmodified**
-    upstream testsuite, subtest 41 failed with `connect: Connection
-    refused` then `runcon: .../inet_socket/tcp/server: Permission denied`
-    while `unix_socket` and 40 other subtests passed under the same
-    confined `sysadm_t` session. The client `runcon -t test_inet_client_t`
-    on the same `test_file_t` binaries succeeds; only the server domain
-    fails. This is not a COPR/PR #3380 gap and not a TF firewall issue
-    (nothing listens because the server never execs). It comes from the
-    testsuite's own test policy (`mcs_constrained(test_inet_server_t)` in
-    upstream `policy/test_inet_socket.te` when Fedora MLS headers expose
-    that macro). **This plan does not patch the testsuite checkout** to
-    work around that; fixing it belongs in selinux-policy and/or upstream
-    selinux-testsuite. The diagnostic discover step below still dumps
-    `ausearch`, full `journalctl -b`, and `dmesg` after `/run/main` so
-    denials are not missed when audit alone is empty (same lesson as the
-    udev/nsfs investigation).
-
-    - `/tmt/tests/unprepare` FAILED, exactly as predicted below:
-    `semanage login --modify -s unconfined_u root` errors under MLS
-    (`libsemanage.dbase_llist_query: could not query record value` /
-    `OSError: Error`) because `unconfined_u` is not a valid SELinux user
-    on an MLS system. Root cause confirmed by reading upstream
-    https://github.com/SELinuxProject/selinux-testsuite's own
-    `tmt/tests.fmf` `/unprepare` test: its `STS_ROOT_DOMAIN = sysadm_t`
-    branch unconditionally hardcodes `-s unconfined_u` when reverting
-    root's login mapping, instead of reverting to whatever
-    STS_ROOT_DOMAIN implies (`sysadm_u` here) -- an upstream oversight,
-    not something wrong in our own prepare script (which already set
-    root to `sysadm_u` correctly). No existing upstream issue/PR about
-    this was found (GitHub search on SELinuxProject/selinux-testsuite for
-    "unconfined_u"/"unprepare"/"STS_ROOT_DOMAIN" on 2026-09-10 found
-    nothing relevant). Given this is third-party, upstream test code we
-    don't control the merge timeline of, and the VM this runs against is
-    a fully ephemeral, one-shot Testing Farm guest that does not need its
-    SELinux login mappings to survive past this test session anyway,
-    `/tmt/tests/unprepare` is excluded below (`exclude:`) rather than
-    patched upstream or worked around with an extra post-unprepare fixup
-    step -- it is a harmless, well-understood, non-blocking known issue,
-    not a silent mask: this paragraph documents exactly why.
+    Excludes upstream tests incompatible with this MLS guest:
+    /prepare-system$ (redundant third reboot; our prepare sets sysadm_u and
+    ssh_sysadm_login), /unprepare$ (tries unconfined_u on MLS).
 
 environment:
   PR_NUMBER: "3380"
-  # See the description above: sysadm_t (not unconfined_t) is the correct
-  # root domain for an MLS guest, and matches this plan's own prepare
-  # script (ssh_sysadm_login boolean already on). STS_KERNEL unused while
-  # /prepare-system is excluded.
   STS_ROOT_DOMAIN: sysadm_t
   STS_KERNEL: local
 
 prepare:
-  - name: Install MLS policy from PR COPR build, switch to MLS and Enforcing (2 reboots)
+  - name: COPR selinux-policy-mls, MLS switch, enforcing (2 reboots)
     how: shell
     script: $TMT_TREE/tmt/mls-final-copr-prepare.sh
 
 discover:
-  - name: mls-boot-cloudinit
-    how: shell
-    tests:
-      - name: /mls-boot-cloudinit-avc-check
-        summary: Confirm cloud-init completed under cloud_init_t on the MLS-enforcing COPR guest; dump AVC denials informationally
-        # Must run before the selinux-testsuite's own /prepare-system
-        # (order: 1 below), which unconditionally truncates
-        # /var/log/audit/audit.log -- running any later would erase the
-        # boot-time AVC evidence this check depends on.
-        order: 0
-        duration: 10m
-        test: $TMT_TREE/tmt/mls-final-copr-execute.sh
   - name: selinux-testsuite
     how: fmf
     url: https://github.com/SELinuxProject/selinux-testsuite
     ref: main
     filter: tag:-ci & tag:-nfs
-    # Known, upstream, MLS-specific, non-blocking issue -- see the
-    # "RESULTS FROM A REAL RUN" paragraph above for the full explanation.
-    # /unprepare's STS_ROOT_DOMAIN=sysadm_t branch unconditionally tries
-    # `semanage login --modify -s unconfined_u root`, which errors out
-    # under MLS (unconfined_u does not exist there). This guest is
-    # ephemeral and does not need that login mapping restored, so the
-    # cleanest fix available to us (this is upstream, third-party test
-    # code) is to just not run it, rather than let it fail loudly or mask
-    # it silently.
     exclude:
       - /prepare-system$
       - /unprepare$
-  - name: mls-testsuite-diag
-    how: shell
-    tests:
-      - name: /mls-testsuite-diag-run-main-evidence
-        summary: Capture real ausearch/ls-Z/id-Z evidence for the selinux-testsuite run/main "test_policy.pp Permission denied" failure (Problem A); purely informational, never blocks the plan
-        # Must run after /selinux-testsuite/tmt/tests/run/main (order: 3,
-        # where the failure happens) so there is something to capture,
-        # and before /selinux-testsuite/tmt/tests/unprepare (order: 5,
-        # harmless either way since it's excluded above) -- order: 4
-        # lands exactly between them and does not collide with anything
-        # else (the upstream /avc-check and /gitignore-coverage tests
-        # that also use order: 4 are tag:[ci], already filtered out
-        # above).
-        order: 4
-        duration: 5m
-        test: $TMT_TREE/tmt/mls-testsuite-diag.sh
 
 execute:
   how: tmt

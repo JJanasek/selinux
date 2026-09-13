@@ -42,10 +42,6 @@ case "$reboot_count" in
 
     mkdir -p /etc/cloud/cloud.cfg.d
     echo 'ssh_deletekeys: false' > /etc/cloud/cloud.cfg.d/99-preserve-ssh-host-keys.cfg
-    cat > /etc/cloud/cloud.cfg.d/98-selinux-context-check.cfg <<'CICFG'
-bootcmd:
-  - [ sh, -c, "id -Z > /var/log/cloud-init-selinux-context.log 2>&1" ]
-CICFG
     cloud-init clean --logs
 
     prepare_for_mls_reboot

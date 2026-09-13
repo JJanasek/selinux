@@ -1,0 +1,41 @@
+summary: "[debug] COPR MLS plan + boot AVC + run/main diagnostics"
+description: |
+    Same as /tmt/mls-final-copr-test plus shell discover tests from this
+    directory. Use only while debugging; not for CI gating.
+
+environment:
+  PR_NUMBER: "3380"
+  STS_ROOT_DOMAIN: sysadm_t
+  STS_KERNEL: local
+
+prepare:
+  - name: COPR selinux-policy-mls, MLS switch, enforcing (2 reboots)
+    how: shell
+    script: $TMT_TREE/tmt/mls-final-copr-prepare.sh
+
+discover:
+  - name: mls-copr-debug
+    how: shell
+    tests:
+      - name: /debug/mls-boot-cloudinit-avc-check
+        order: 0
+        duration: 10m
+        test: $TMT_TREE/tmt/debug/mls-copr/mls-boot-cloudinit-avc-check.sh
+  - name: selinux-testsuite
+    how: fmf
+    url: https://github.com/SELinuxProject/selinux-testsuite
+    ref: main
+    filter: tag:-ci & tag:-nfs
+    exclude:
+      - /prepare-system$
+      - /unprepare$
+  - name: mls-copr-debug-post-main
+    how: shell
+    tests:
+      - name: /debug/mls-testsuite-run-main-diag
+        order: 4
+        duration: 5m
+        test: $TMT_TREE/tmt/debug/mls-copr/mls-testsuite-run-main-diag.sh
+
+execute:
+  how: tmt
