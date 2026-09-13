@@ -20,10 +20,12 @@ description: |
     fedora-44-x86_64 chroot -- so run this plan against --compose
     Fedora-44, not Fedora-Rawhide.
 
-    This covers 6 of the 8 modules the production plan builds locally
-    (cloudform + the 5 udev_t fixes now folded into udev.te upstream);
-    mlssshpipes and udevptrace are NOT part of PR #3380 (not present
-    anywhere in its diff) and are still built/loaded locally here.
+    The COPR RPM under test must already include all MLS policy fixes needed
+    for boot, cloud-init, ssh/sysadm login, semodule/checkpolicy, and
+    udev (cloudform/udev in the policy PR under test, plus follow-up
+    selinux-policy changes for ssh fifo pipes, udev sys_ptrace/initrc
+    transitions, and semanage_t/checkpolicy_t map/relabelfrom under MLS).
+    This plan does not build or load standalone `.te` modules on the guest.
 
     This is a one-off validation test, NOT a replacement for the
     production tmt/mls-final.fmf plan/mechanism. Do not treat a pass here
@@ -45,9 +47,7 @@ description: |
     its policy sources, Makefiles, or tests. Only the **environment** is
     prepared here: COPR-built selinux-policy-mls (PR under test), MLS
     switch + user mapping via `prepare_for_mls` / `mls-final-copr-
-    prepare.sh`, optional local `.te` modules loaded in `prepare` on top
-    of that RPM (same pattern as `mlssshpipes` / `udevptrace` /
-    `mlssemanageaccess`), `STS_ROOT_DOMAIN: sysadm_t`, and FMF-level
+    prepare.sh`, `STS_ROOT_DOMAIN: sysadm_t`, and FMF-level
     excludes (e.g. `/unprepare$`) where upstream cleanup is incompatible
     with MLS.
 
@@ -178,16 +178,12 @@ description: |
     intended) from the confined `sysadm_t` instead of targeted's
     unconfined root login.
 
-    FIXED locally (this epic's scope: no selinux-policy PR/push, just a
-    standalone module on top of the COPR build, same mechanism as
-    `mlssshpipes`/`udevptrace`): `tmt/mls-semanage-access-fix/
-    mlssemanageaccess.te` grants exactly the four missing rules above
-    (`checkpolicy_t`/`semanage_t` `map` on `etc_t`, `semanage_t` `map` on
-    `var_t`, `semanage_t` `relabelfrom` on `semanage_store_t` dir+file),
-    built/loaded by `mls-final-copr-prepare.sh` alongside the other two
-    non-upstreamed local fixes.
+    Fix belongs in selinux-policy (MLS rules for checkpolicy_t/semanage_t
+    when `unconfined_domain` is absent), not in a guest-local module.
+    Prototype rules were validated via standalone modules during
+    development; COPR must ship the real refpolicy change.
 
-    CONFIRMED FIXED by re-running with this module (Testing Farm request
+    CONFIRMED FIXED when those rules are present (Testing Farm request
     bc9ce803-74e3-460f-a8d3-32a0e7e6157e,
     https://artifacts.dev.testing-farm.io/bc9ce803-74e3-460f-a8d3-32a0e7e6157e):
     `make -C policy load`'s `semodule -i test_policy/test_policy.pp ...`
@@ -249,7 +245,7 @@ environment:
   STS_KERNEL: default
 
 prepare:
-  - name: Install MLS policy from PR #3380's COPR build, build/load the 2 remaining local fixes, switch to MLS and then Enforcing (2 reboots)
+  - name: Install MLS policy from PR COPR build, switch to MLS and Enforcing (2 reboots)
     how: shell
     script: $TMT_TREE/tmt/mls-final-copr-prepare.sh
 
