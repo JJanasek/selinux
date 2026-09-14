@@ -24,8 +24,8 @@ if [ "$mode" != "enforcing" ] || [ "$policy" != "mls" ]; then
 fi
 
 if semodule -lfull 2>/dev/null | grep -q '^mlssemanageaccess\b'; then
-    echo "mlssemanageaccess module already loaded"
-    exit 0
+    echo "mlssemanageaccess already loaded — reinstall to pick up .te changes"
+    semodule -r mlssemanageaccess 2>/dev/null || true
 fi
 
 fixdir="${TMT_TREE:?}/tmt/mls-semanage-access-fix"

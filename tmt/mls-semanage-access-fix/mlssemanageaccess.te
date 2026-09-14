@@ -40,6 +40,7 @@ files_search_var(checkpolicy_t)
 files_map_read_var_files(checkpolicy_t)
 
 allow semanage_t etc_t:file map;
-allow semanage_t semanage_store_t:{ dir file } relabelfrom;
+allow semanage_t semanage_store_t:dir { relabelfrom relabelto };
+allow semanage_t semanage_store_t:file { relabelfrom relabelto };
 files_search_var(semanage_t)
 files_map_read_var_files(semanage_t)
