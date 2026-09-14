@@ -15,8 +15,11 @@ description: |
     repoquery) or `COPR_SELINUX_POLICY_MLS_NVR=selinux-policy-mls-…`.
     Prepare fails if the installed RPM does not match `COPR_RELEASE_MATCH`.
 
-    Policy fixes (cloud-init, udev, ssh pipes, semanage/checkpolicy under
-    MLS, etc.) must be in the COPR RPM — no guest-local semodule build.
+    Policy fixes (cloud-init, udev, ssh pipes, etc.) belong in the COPR RPM.
+    Until COPR reliably carries the semanage/checkpolicy MLS rules, prepare
+    also loads `tmt/mls-semanage-access-fix` (set
+    `LOAD_MLS_SEMANAGE_ACCESS_FIX=0` to test COPR-only). Pin COPR with
+    `COPR_SELINUX_POLICY_MLS_NVR` or `COPR_RELEASE_MATCH`.
 
     Excludes upstream tests incompatible with this MLS guest:
     /prepare-system$ (redundant third reboot; our prepare sets sysadm_u and
@@ -30,6 +33,9 @@ prepare:
   - name: COPR selinux-policy-mls, MLS switch, enforcing (2 reboots)
     how: shell
     script: $TMT_TREE/tmt/mls-final-copr-prepare.sh
+  - name: Load mlssemanageaccess module (semanage/checkpolicy MLS overlay)
+    how: shell
+    script: $TMT_TREE/tmt/mls-final-copr-load-semanage-fix.sh
 
 discover:
   - name: selinux-testsuite

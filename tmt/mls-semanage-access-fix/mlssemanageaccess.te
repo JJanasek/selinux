@@ -28,10 +28,16 @@ policy_module(mlssemanageaccess, 1.0)
 
 gen_require(`
 	type checkpolicy_t, semanage_t;
-	type etc_t, semanage_store_t, var_t;
+	type etc_t, semanage_store_t;
+	attribute mlsfileread;
 ')
 
+typeattribute semanage_t mlsfileread;
+typeattribute checkpolicy_t mlsfileread;
+
 allow checkpolicy_t etc_t:file map;
+files_search_var(checkpolicy_t)
+files_map_read_var_files(checkpolicy_t)
 
 allow semanage_t etc_t:file map;
 allow semanage_t semanage_store_t:{ dir file } relabelfrom;
