@@ -10,6 +10,11 @@ description: |
     `SKIP_COPR_INSTALL=1` so prepare only switches to MLS. Prefer
     Fedora-44 when the COPR chroot is fedora-44-x86_64.
 
+    Fork COPR projects often publish multiple builds: pin the intended
+    `selinux-policy-mls` with `COPR_RELEASE_MATCH=g1819570b5` (grep on
+    repoquery) or `COPR_SELINUX_POLICY_MLS_NVR=selinux-policy-mls-…`.
+    Prepare fails if the installed RPM does not match `COPR_RELEASE_MATCH`.
+
     Policy fixes (cloud-init, udev, ssh pipes, semanage/checkpolicy under
     MLS, etc.) must be in the COPR RPM — no guest-local semodule build.
 

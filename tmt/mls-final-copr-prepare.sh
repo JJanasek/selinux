@@ -26,7 +26,21 @@ case "$reboot_count" in
             exit 1
         fi
 
-        pinned_nvr=$(dnf -y repoquery --repo="$copr_repoid" --qf '%{name}-%{evr}.%{arch}\n' selinux-policy-mls | sort -V | tail -n1)
+        if [ -n "${COPR_SELINUX_POLICY_MLS_NVR:-}" ]; then
+            pinned_nvr="${COPR_SELINUX_POLICY_MLS_NVR}"
+        else
+            candidates=$(dnf -y repoquery --repo="$copr_repoid" --qf '%{name}-%{evr}.%{arch}\n' selinux-policy-mls | sort -V)
+            if [ -n "${COPR_RELEASE_MATCH:-}" ]; then
+                pinned_nvr=$(printf '%s\n' "$candidates" | grep -F "${COPR_RELEASE_MATCH}" | tail -n1)
+                if [ -z "$pinned_nvr" ]; then
+                    echo "FAIL: no selinux-policy-mls matching COPR_RELEASE_MATCH=${COPR_RELEASE_MATCH} in ${copr_repoid}" >&2
+                    printf '%s\n' "$candidates" >&2
+                    exit 1
+                fi
+            else
+                pinned_nvr=$(printf '%s\n' "$candidates" | tail -n1)
+            fi
+        fi
         if [ -z "$pinned_nvr" ]; then
             echo "FAIL: no selinux-policy-mls in repo ${copr_repoid}" >&2
             exit 1
@@ -34,8 +48,14 @@ case "$reboot_count" in
         echo "Installing COPR build: ${pinned_nvr}"
         dnf install -y "$pinned_nvr" policycoreutils-python-utils audit
 
+        echo "COPR provenance: $(rpm -q selinux-policy-mls selinux-policy 2>/dev/null || true)"
         if [ -n "${PR_NUMBER:-}" ] && ! rpm -q selinux-policy-mls | grep -qF ".pr${PR_NUMBER}."; then
             echo "FAIL: selinux-policy-mls is not from PR #${PR_NUMBER} COPR" >&2
+            rpm -q selinux-policy-mls >&2
+            exit 1
+        fi
+        if [ -n "${COPR_RELEASE_MATCH:-}" ] && ! rpm -q selinux-policy-mls | grep -qF "${COPR_RELEASE_MATCH}"; then
+            echo "FAIL: installed selinux-policy-mls does not match COPR_RELEASE_MATCH=${COPR_RELEASE_MATCH}" >&2
             rpm -q selinux-policy-mls >&2
             exit 1
         fi
