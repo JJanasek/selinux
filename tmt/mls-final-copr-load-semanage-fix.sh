@@ -10,14 +10,13 @@ if [ "${LOAD_MLS_SEMANAGE_ACCESS_FIX:-1}" = 0 ]; then
     exit 0
 fi
 
+# TMT tracks TMT_REBOOT_COUNT per prepare *step*, not plan-wide. After the COPR
+# prepare step finishes its two reboots, this step's counter is still 0 — gate
+# on runtime MLS state instead.
 reboot_count="${TMT_REBOOT_COUNT:-0}"
-if [ "$reboot_count" -lt 2 ]; then
-    echo "Skip semanage fix until MLS enforcing (TMT_REBOOT_COUNT=${reboot_count})"
-    exit 0
-fi
-
 mode=$(sestatus | awk -F': *' '/^Current mode:/ {print $2}')
 policy=$(sestatus | awk -F': *' '/^Loaded policy name:/ {print $2}')
+echo "mlssemanageaccess prepare: TMT_REBOOT_COUNT=${reboot_count} mode=${mode} policy=${policy}"
 if [ "$mode" != "enforcing" ] || [ "$policy" != "mls" ]; then
     echo "FAIL: expected enforcing MLS before loading fix, got mode=${mode} policy=${policy}" >&2
     exit 1

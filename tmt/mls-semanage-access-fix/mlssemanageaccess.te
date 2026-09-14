@@ -1,4 +1,4 @@
-policy_module(mlssemanageaccess, 1.0)
+policy_module(mlssemanageaccess, 1.1)
 
 # checkpolicy_t and semanage_t both get their broad "read/relabel almost
 # any admin-created content" access under Fedora's targeted policy from
@@ -28,7 +28,7 @@ policy_module(mlssemanageaccess, 1.0)
 
 gen_require(`
 	type checkpolicy_t, semanage_t;
-	type etc_t, semanage_store_t;
+	type etc_t, semanage_store_t, file_context_t, selinux_config_t;
 	attribute mlsfileread;
 ')
 
@@ -42,5 +42,7 @@ files_map_read_var_files(checkpolicy_t)
 allow semanage_t etc_t:file map;
 allow semanage_t semanage_store_t:dir { relabelfrom relabelto };
 allow semanage_t semanage_store_t:file { relabelfrom relabelto };
+allow semanage_t file_context_t:file { relabelfrom relabelto };
+allow semanage_t selinux_config_t:file { relabelfrom relabelto };
 files_search_var(semanage_t)
 files_map_read_var_files(semanage_t)
