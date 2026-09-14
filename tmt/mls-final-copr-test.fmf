@@ -1,13 +1,14 @@
 summary: selinux-testsuite on MLS enforcing with COPR selinux-policy-mls
 description: |
-    Install selinux-policy-mls from COPR, switch guest to MLS enforcing via
+    Install matching selinux-policy, selinux-policy-devel, and
+    selinux-policy-mls from COPR, switch guest to MLS enforcing via
     prepare_for_mls (two reboots), run upstream selinux-testsuite.
 
     COPR: `COPR_REPO=owner/project` or Packit `PR_NUMBER`. Pin with
     `COPR_SELINUX_POLICY_MLS_NVR` or `COPR_RELEASE_MATCH`. With Testing Farm
     `--fedora-copr-build`, set `SKIP_COPR_INSTALL=1`.
 
-    `STS_KERNEL=local` needs kernel-devel (second prepare step).
+    `STS_KERNEL=local`: kernel-devel is installed in prepare before COPR/MLS.
 
     Excludes: /prepare-system$, /unprepare$.
 
@@ -19,10 +20,6 @@ prepare:
   - name: COPR selinux-policy-mls and MLS switch (2 reboots)
     how: shell
     script: $TMT_TREE/tmt/mls-final-copr-prepare.sh
-  - name: kernel-devel for testsuite module_load (STS_KERNEL=local)
-    how: install
-    package:
-      - kernel-devel
 
 discover:
   - name: selinux-testsuite
