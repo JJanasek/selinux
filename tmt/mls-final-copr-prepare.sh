@@ -90,6 +90,8 @@ case "$reboot_count" in
     echo 'ssh_deletekeys: false' > /etc/cloud/cloud.cfg.d/99-preserve-ssh-host-keys.cfg
     cloud-init clean --logs
 
+    MLS_SEMANAGE_FIX_PHASE=configure bash "$TMT_TREE/tmt/mls-final-copr-load-semanage-fix.sh"
+
     prepare_for_mls_reboot
     ;;
 
@@ -122,7 +124,6 @@ case "$reboot_count" in
 
     # Same TMT_REBOOT_COUNT as this prepare step (>=2); do not use a second
     # prepare task — per-step reboot counters reset and skip logic breaks.
-    # shellcheck source=/dev/null
-    bash "$TMT_TREE/tmt/mls-final-copr-load-semanage-fix.sh"
+    MLS_SEMANAGE_FIX_PHASE=verify bash "$TMT_TREE/tmt/mls-final-copr-load-semanage-fix.sh"
     ;;
 esac
