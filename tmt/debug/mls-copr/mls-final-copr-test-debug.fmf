@@ -12,6 +12,9 @@ prepare:
   - name: COPR selinux-policy-mls, MLS switch, enforcing (2 reboots)
     how: shell
     script: $TMT_TREE/tmt/mls-final-copr-prepare.sh
+  - name: Load mlssemanageaccess module (semanage/checkpolicy MLS overlay)
+    how: shell
+    script: $TMT_TREE/tmt/mls-final-copr-load-semanage-fix.sh
 
 discover:
   - name: mls-copr-debug
@@ -34,8 +37,12 @@ discover:
     tests:
       - name: /debug/mls-testsuite-run-main-diag
         order: 4
-        duration: 5m
+        duration: 10m
         test: $TMT_TREE/tmt/debug/mls-copr/mls-testsuite-run-main-diag.sh
+      - name: /debug/mls-forensics-full-dump
+        order: 5
+        duration: 15m
+        test: $TMT_TREE/tmt/debug/mls-copr/mls-forensics-full-dump.sh
 
 execute:
   how: tmt

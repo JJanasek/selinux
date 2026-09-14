@@ -46,6 +46,17 @@ discover:
     exclude:
       - /prepare-system$
       - /unprepare$
+  - name: mls-copr-forensics
+    how: shell
+    tests:
+      - name: /debug/mls-testsuite-run-main-diag
+        order: 4
+        duration: 10m
+        test: $TMT_TREE/tmt/debug/mls-copr/mls-testsuite-run-main-diag.sh
+      - name: /debug/mls-forensics-full-dump
+        order: 5
+        duration: 15m
+        test: $TMT_TREE/tmt/debug/mls-copr/mls-forensics-full-dump.sh
 
 execute:
   how: tmt
