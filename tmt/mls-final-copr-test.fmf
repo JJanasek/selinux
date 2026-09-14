@@ -1,41 +1,22 @@
 summary: selinux-testsuite on MLS enforcing with COPR selinux-policy-mls
 description: |
-    Install selinux-policy-mls from Packit COPR for selinux-policy PR
-    ${PR_NUMBER} (packit/fedora-selinux-selinux-policy-${PR_NUMBER}), switch
-    the guest to MLS enforcing, run upstream selinux-testsuite unmodified.
+    Install selinux-policy-mls from COPR, switch guest to MLS enforcing via
+    prepare_for_mls (two reboots), run upstream selinux-testsuite.
 
-    Install policy from COPR: either Packit per-PR (`PR_NUMBER`, default
-    3380) or a fork project (`COPR_REPO=owner/project`, no upstream PR).
-    With Testing Farm `--fedora-copr-build id:chroot`, set
-    `SKIP_COPR_INSTALL=1` so prepare only switches to MLS. Prefer
-    Fedora-44 when the COPR chroot is fedora-44-x86_64.
+    COPR: `COPR_REPO=owner/project` or Packit `PR_NUMBER`. Pin with
+    `COPR_SELINUX_POLICY_MLS_NVR` or `COPR_RELEASE_MATCH`. With Testing Farm
+    `--fedora-copr-build`, set `SKIP_COPR_INSTALL=1`.
 
-    Fork COPR projects often publish multiple builds: pin the intended
-    `selinux-policy-mls` with `COPR_RELEASE_MATCH=g1819570b5` (grep on
-    repoquery) or `COPR_SELINUX_POLICY_MLS_NVR=selinux-policy-mls-…`.
-    Prepare fails if the installed RPM does not match `COPR_RELEASE_MATCH`.
+    `STS_KERNEL=local` needs kernel-devel (second prepare step).
 
-    Policy fixes (cloud-init, udev, ssh pipes, etc.) belong in the COPR RPM.
-    Until COPR carries the semanage/checkpolicy MLS rules (including
-    semanage_store relabelto for `semodule -i`), prepare loads
-    `tmt/mls-semanage-access-fix` after MLS enforcing (prepare installs
-    selinux-policy-devel before COPR so TF can build the module). Set
-    `LOAD_MLS_SEMANAGE_ACCESS_FIX=0` for COPR-only. Pin COPR with
-    `COPR_SELINUX_POLICY_MLS_NVR` or `COPR_RELEASE_MATCH`.
-
-    With `STS_KERNEL=local`, run/main builds in-tree kmods; install
-    `kernel-devel` after MLS prepare (second prepare step) for `/lib/modules/$(uname -r)/build`.
-
-    Excludes upstream tests incompatible with this MLS guest:
-    /prepare-system$ (redundant third reboot; our prepare sets sysadm_u and
-    ssh_sysadm_login), /unprepare$ (tries unconfined_u on MLS).
+    Excludes: /prepare-system$, /unprepare$.
 
 environment:
   STS_ROOT_DOMAIN: sysadm_t
   STS_KERNEL: local
 
 prepare:
-  - name: COPR selinux-policy-mls, MLS switch, enforcing, semanage overlay
+  - name: COPR selinux-policy-mls and MLS switch (2 reboots)
     how: shell
     script: $TMT_TREE/tmt/mls-final-copr-prepare.sh
   - name: kernel-devel for testsuite module_load (STS_KERNEL=local)
@@ -52,17 +33,6 @@ discover:
     exclude:
       - /prepare-system$
       - /unprepare$
-  - name: mls-copr-forensics
-    how: shell
-    tests:
-      - name: /debug/mls-testsuite-run-main-diag
-        order: 4
-        duration: 10m
-        test: $TMT_TREE/tmt/debug/mls-copr/mls-testsuite-run-main-diag.sh
-      - name: /debug/mls-forensics-full-dump
-        order: 5
-        duration: 15m
-        test: $TMT_TREE/tmt/debug/mls-copr/mls-forensics-full-dump.sh
 
 execute:
   how: tmt

@@ -1,17 +1,16 @@
 #!/bin/bash
 set -eo pipefail
 
-# MLS prepare for COPR-validated selinux-policy PRs (mls-final-copr-test.fmf).
-# Install selinux-policy-mls from COPR (Packit PR or fork COPR_REPO), then MLS
-# switch and two reboots. Set SKIP_COPR_INSTALL=1 when Testing Farm already
-# installed the build via --fedora-copr-build.
+# MLS prepare for COPR-validated selinux-policy (mls-final-copr-test.fmf).
+# Install selinux-policy-mls from COPR, then MLS switch and two reboots.
+# Set SKIP_COPR_INSTALL=1 when Testing Farm already installed via --fedora-copr-build.
 reboot_count="${TMT_REBOOT_COUNT:-0}"
 
 verify_copr_mls_pin() {
     if [ -n "${COPR_SELINUX_POLICY_MLS_NVR:-}" ]; then
         if ! rpm -q selinux-policy-mls | grep -qF "${COPR_SELINUX_POLICY_MLS_NVR}"; then
             echo "FAIL: selinux-policy-mls is not ${COPR_SELINUX_POLICY_MLS_NVR}" >&2
-            rpm -q selinux-policy-mls selinux-policy selinux-policy-devel >&2
+            rpm -q selinux-policy-mls selinux-policy >&2
             exit 1
         fi
     fi
@@ -19,10 +18,6 @@ verify_copr_mls_pin() {
 
 case "$reboot_count" in
 0)
-    # Devel headers/Makefile before COPR: installing selinux-policy-devel after
-    # the pinned COPR MLS on TF downgrades policy (testing-farm-tag-repository).
-    dnf install -y checkpolicy policycoreutils-devel selinux-policy-devel
-
     if [ "${SKIP_COPR_INSTALL:-0}" != 1 ]; then
         if [ -n "${COPR_REPO:-}" ]; then
             copr_slug="${COPR_REPO}"
@@ -90,8 +85,6 @@ case "$reboot_count" in
     echo 'ssh_deletekeys: false' > /etc/cloud/cloud.cfg.d/99-preserve-ssh-host-keys.cfg
     cloud-init clean --logs
 
-    MLS_SEMANAGE_FIX_PHASE=configure bash "$TMT_TREE/tmt/mls-final-copr-load-semanage-fix.sh"
-
     prepare_for_mls_reboot
     ;;
 
@@ -121,9 +114,5 @@ case "$reboot_count" in
         echo "FAIL: expected enforcing MLS, got mode=${mode} policy=${policy}" >&2
         exit 1
     fi
-
-    # Same TMT_REBOOT_COUNT as this prepare step (>=2); do not use a second
-    # prepare task — per-step reboot counters reset and skip logic breaks.
-    MLS_SEMANAGE_FIX_PHASE=verify bash "$TMT_TREE/tmt/mls-final-copr-load-semanage-fix.sh"
     ;;
 esac
