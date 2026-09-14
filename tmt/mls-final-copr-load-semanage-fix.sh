@@ -2,6 +2,8 @@
 set -eo pipefail
 
 # Build and load mlssemanageaccess on enforcing MLS (COPR base + local overlay).
+# Module build deps (selinux-policy-devel) must be installed in prepare *before*
+# the pinned COPR selinux-policy-mls — see mls-final-copr-prepare.sh case 0.
 # Set LOAD_MLS_SEMANAGE_ACCESS_FIX=0 to skip (COPR-only runs).
 
 if [ "${LOAD_MLS_SEMANAGE_ACCESS_FIX:-1}" = 0 ]; then
@@ -37,16 +39,10 @@ if [ ! -f "$te" ]; then
     echo "FAIL: missing ${te}" >&2
     exit 1
 fi
-
 if [ ! -f /usr/share/selinux/devel/Makefile ]; then
-    echo "FAIL: /usr/share/selinux/devel/Makefile missing (need compose selinux-policy-devel, not dnf reinstall)" >&2
+    echo "FAIL: /usr/share/selinux/devel/Makefile missing — install selinux-policy-devel before COPR in prepare" >&2
     exit 1
 fi
-
-# checkpolicy alone cannot expand policy_module(); use the devel Makefile.
-# Do NOT dnf install selinux-policy-devel here — Testing Farm's tag repo
-# downgrades a pinned COPR selinux-policy-mls (see TF d36b46a7).
-dnf install -y checkpolicy policycoreutils-devel
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT

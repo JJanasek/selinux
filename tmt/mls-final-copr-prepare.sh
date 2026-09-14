@@ -7,8 +7,22 @@ set -eo pipefail
 # installed the build via --fedora-copr-build.
 reboot_count="${TMT_REBOOT_COUNT:-0}"
 
+verify_copr_mls_pin() {
+    if [ -n "${COPR_SELINUX_POLICY_MLS_NVR:-}" ]; then
+        if ! rpm -q selinux-policy-mls | grep -qF "${COPR_SELINUX_POLICY_MLS_NVR}"; then
+            echo "FAIL: selinux-policy-mls is not ${COPR_SELINUX_POLICY_MLS_NVR}" >&2
+            rpm -q selinux-policy-mls selinux-policy selinux-policy-devel >&2
+            exit 1
+        fi
+    fi
+}
+
 case "$reboot_count" in
 0)
+    # Devel headers/Makefile before COPR: installing selinux-policy-devel after
+    # the pinned COPR MLS on TF downgrades policy (testing-farm-tag-repository).
+    dnf install -y checkpolicy policycoreutils-devel selinux-policy-devel
+
     if [ "${SKIP_COPR_INSTALL:-0}" != 1 ]; then
         if [ -n "${COPR_REPO:-}" ]; then
             copr_slug="${COPR_REPO}"
@@ -59,9 +73,11 @@ case "$reboot_count" in
             rpm -q selinux-policy-mls >&2
             exit 1
         fi
+        verify_copr_mls_pin
     else
         echo "SKIP_COPR_INSTALL=1: using selinux-policy-mls already on guest: $(rpm -q selinux-policy-mls)"
         dnf install -y policycoreutils-python-utils audit
+        verify_copr_mls_pin
     fi
 
     # shellcheck source=/dev/null
