@@ -12,6 +12,10 @@ prepare:
   - name: COPR selinux-policy-mls, MLS switch, enforcing, semanage overlay
     how: shell
     script: $TMT_TREE/tmt/mls-final-copr-prepare.sh
+  - name: kernel-devel for testsuite module_load (STS_KERNEL=local)
+    how: install
+    package:
+      - kernel-devel
 
 discover:
   - name: mls-copr-debug

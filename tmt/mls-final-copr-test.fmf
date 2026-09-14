@@ -23,6 +23,9 @@ description: |
     `LOAD_MLS_SEMANAGE_ACCESS_FIX=0` for COPR-only. Pin COPR with
     `COPR_SELINUX_POLICY_MLS_NVR` or `COPR_RELEASE_MATCH`.
 
+    With `STS_KERNEL=local`, run/main builds in-tree kmods; install
+    `kernel-devel` after MLS prepare (second prepare step) for `/lib/modules/$(uname -r)/build`.
+
     Excludes upstream tests incompatible with this MLS guest:
     /prepare-system$ (redundant third reboot; our prepare sets sysadm_u and
     ssh_sysadm_login), /unprepare$ (tries unconfined_u on MLS).
@@ -35,6 +38,10 @@ prepare:
   - name: COPR selinux-policy-mls, MLS switch, enforcing, semanage overlay
     how: shell
     script: $TMT_TREE/tmt/mls-final-copr-prepare.sh
+  - name: kernel-devel for testsuite module_load (STS_KERNEL=local)
+    how: install
+    package:
+      - kernel-devel
 
 discover:
   - name: selinux-testsuite
