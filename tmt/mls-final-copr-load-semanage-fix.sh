@@ -1,25 +1,29 @@
 #!/bin/bash
 set -eo pipefail
 
-# Load mlssemanageaccess local module after MLS enforcing is up (reboot_count >= 2).
-# Diagnostic overlay: proves whether remaining run/main failures are COPR policy
-# gaps vs something else. Set LOAD_MLS_SEMANAGE_ACCESS_FIX=0 to skip.
+# Build and load mlssemanageaccess on enforcing MLS (COPR base + local overlay).
+# Set LOAD_MLS_SEMANAGE_ACCESS_FIX=0 to skip (COPR-only runs).
 
 if [ "${LOAD_MLS_SEMANAGE_ACCESS_FIX:-1}" = 0 ]; then
     echo "LOAD_MLS_SEMANAGE_ACCESS_FIX=0: skip guest semanage fix module"
     exit 0
 fi
 
-# TMT tracks TMT_REBOOT_COUNT per prepare *step*, not plan-wide. After the COPR
-# prepare step finishes its two reboots, this step's counter is still 0 — gate
-# on runtime MLS state instead.
-reboot_count="${TMT_REBOOT_COUNT:-0}"
 mode=$(sestatus | awk -F': *' '/^Current mode:/ {print $2}')
 policy=$(sestatus | awk -F': *' '/^Loaded policy name:/ {print $2}')
-echo "mlssemanageaccess prepare: TMT_REBOOT_COUNT=${reboot_count} mode=${mode} policy=${policy}"
+reboot_count="${TMT_REBOOT_COUNT:-0}"
+echo "mlssemanageaccess: TMT_REBOOT_COUNT=${reboot_count} mode=${mode} policy=${policy}"
 if [ "$mode" != "enforcing" ] || [ "$policy" != "mls" ]; then
     echo "FAIL: expected enforcing MLS before loading fix, got mode=${mode} policy=${policy}" >&2
     exit 1
+fi
+
+if [ -n "${COPR_SELINUX_POLICY_MLS_NVR:-}" ]; then
+    if ! rpm -q selinux-policy-mls | grep -qF "${COPR_SELINUX_POLICY_MLS_NVR}"; then
+        echo "FAIL: selinux-policy-mls no longer pinned to ${COPR_SELINUX_POLICY_MLS_NVR}" >&2
+        rpm -q selinux-policy-mls >&2
+        exit 1
+    fi
 fi
 
 if semodule -lfull 2>/dev/null | grep -q '^mlssemanageaccess\b'; then
@@ -34,16 +38,22 @@ if [ ! -f "$te" ]; then
     exit 1
 fi
 
-dnf install -y checkpolicy policycoreutils-devel selinux-policy-devel
+if [ ! -f /usr/share/selinux/devel/Makefile ]; then
+    echo "FAIL: /usr/share/selinux/devel/Makefile missing (need compose selinux-policy-devel, not dnf reinstall)" >&2
+    exit 1
+fi
+
+# checkpolicy alone cannot expand policy_module(); use the devel Makefile.
+# Do NOT dnf install selinux-policy-devel here — Testing Farm's tag repo
+# downgrades a pinned COPR selinux-policy-mls (see TF d36b46a7).
+dnf install -y checkpolicy policycoreutils-devel
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
-
 cp "$te" "$work/"
 (
     cd "$work"
-    checkmodule -M -m -o mlssemanageaccess.mod mlssemanageaccess.te
-    semodule_package -o mlssemanageaccess.pp -m mlssemanageaccess.mod
+    make -f /usr/share/selinux/devel/Makefile mlssemanageaccess.pp
 )
 
 echo "Loading mlssemanageaccess on MLS store (COPR base + local overlay)"
@@ -52,4 +62,4 @@ semodule -lfull | grep -E '^mlssemanageaccess\b' || {
     echo "FAIL: mlssemanageaccess not listed after semodule -i" >&2
     exit 1
 }
-echo "mlssemanageaccess loaded OK"
+echo "mlssemanageaccess loaded OK; $(rpm -q selinux-policy-mls)"

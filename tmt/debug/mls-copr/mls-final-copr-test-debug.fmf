@@ -9,12 +9,9 @@ environment:
   STS_KERNEL: local
 
 prepare:
-  - name: COPR selinux-policy-mls, MLS switch, enforcing (2 reboots)
+  - name: COPR selinux-policy-mls, MLS switch, enforcing, semanage overlay
     how: shell
     script: $TMT_TREE/tmt/mls-final-copr-prepare.sh
-  - name: Load mlssemanageaccess module (semanage/checkpolicy MLS overlay)
-    how: shell
-    script: $TMT_TREE/tmt/mls-final-copr-load-semanage-fix.sh
 
 discover:
   - name: mls-copr-debug

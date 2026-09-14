@@ -103,5 +103,10 @@ case "$reboot_count" in
         echo "FAIL: expected enforcing MLS, got mode=${mode} policy=${policy}" >&2
         exit 1
     fi
+
+    # Same TMT_REBOOT_COUNT as this prepare step (>=2); do not use a second
+    # prepare task — per-step reboot counters reset and skip logic breaks.
+    # shellcheck source=/dev/null
+    bash "$TMT_TREE/tmt/mls-final-copr-load-semanage-fix.sh"
     ;;
 esac
