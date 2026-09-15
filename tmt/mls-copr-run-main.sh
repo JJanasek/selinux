@@ -1,5 +1,5 @@
 #!/bin/bash
-# Upstream /run/main, plus MLS workaround for testsuite policy/test_inet_socket.te.
+# Upstream /run/main with MLS/sysadm tweaks in testsuite policy before load.
 # Runs every SUBDIRS */test (no fail-fast); exits non-zero if any failed.
 set -eu
 
@@ -12,22 +12,40 @@ if [ -n "${TMT_PLAN_DATA:-}" ]; then
 else
     search_root=/var/ARTIFACTS
 fi
-test_te=$(find "$search_root" -path '*/discover/selinux-testsuite/policy/test_inet_socket.te' 2>/dev/null | head -n 1)
-if [ -z "$test_te" ]; then
-    test_te=$(find "$search_root" -name 'test_inet_socket.te' 2>/dev/null | head -n 1)
+policy_dir=$(find "$search_root" -type d -path '*/discover/selinux-testsuite/policy' 2>/dev/null | head -n 1)
+if [ -z "$policy_dir" ]; then
+    policy_dir=$(find "$search_root" -type d -name policy -path '*/selinux-testsuite/*' 2>/dev/null | head -n 1)
 fi
-if [ -z "$test_te" ]; then
-    echo "test_inet_socket.te not found under ${search_root}" >&2
+if [ -z "$policy_dir" ] || [ ! -f "$policy_dir/test_inet_socket.te" ]; then
+    echo "selinux-testsuite policy/ not found under ${search_root}" >&2
     exit 1
 fi
+
+test_te="$policy_dir/test_inet_socket.te"
 sed -i '/mcs_constrained(test_inet_server_t)/d' "$test_te"
 if grep -q 'mcs_constrained(test_inet_server_t)' "$test_te"; then
     echo "mcs_constrained(test_inet_server_t) still present in ${test_te}" >&2
     exit 1
 fi
-echo "MLS patch: removed mcs_constrained(test_inet_server_t) from ${test_te}"
+echo "MLS patch: removed mcs_constrained(test_inet_server_t) from test_inet_socket.te"
 
-repo_root=$(dirname "$(dirname "$test_te")")
+# Upstream leaves these commented; runcon as sysadm_t needs setexec (+ selinux fs).
+test_global="$policy_dir/test_global.te"
+if [ ! -f "$test_global" ]; then
+    echo "test_global.te not found at ${test_global}" >&2
+    exit 1
+fi
+sed -i \
+    -e 's/^#allow sysadm_t self:process setexec;/allow sysadm_t self:process setexec;/' \
+    -e 's/^#selinux_get_fs_mount(sysadm_t)/selinux_get_fs_mount(sysadm_t)/' \
+    "$test_global"
+if ! grep -q '^allow sysadm_t self:process setexec;' "$test_global"; then
+    echo "sysadm setexec rule still missing in ${test_global}" >&2
+    exit 1
+fi
+echo "MLS patch: enabled sysadm_t setexec for runcon in test_global.te"
+
+repo_root=$(dirname "$policy_dir")
 tests_dir="$repo_root/tests"
 if [ ! -f "$tests_dir/Makefile" ]; then
     echo "testsuite tests/Makefile not found at ${tests_dir}" >&2
