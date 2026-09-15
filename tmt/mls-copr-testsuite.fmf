@@ -1,0 +1,66 @@
+summary: selinux-testsuite on MLS enforcing with COPR selinux-policy-mls
+description: |
+    Install matching selinux-policy RPMs from COPR, switch to MLS enforcing,
+    run upstream selinux-testsuite as sysadm_t (STS_KERNEL=local).
+
+    Env: COPR_REPO or PR_NUMBER; pin COPR_SELINUX_POLICY_MLS_NVR or
+    COPR_RELEASE_MATCH. SKIP_COPR_INSTALL=1 with TF --fedora-copr-build.
+
+environment:
+  STS_ROOT_DOMAIN: sysadm_t
+  STS_KERNEL: local
+
+prepare:
+  - name: COPR MLS policy and guest switch
+    how: shell
+    script: $TMT_TREE/tmt/mls-copr-prepare.sh
+
+discover:
+  - name: selinux-testsuite
+    how: fmf
+    url: https://github.com/SELinuxProject/selinux-testsuite
+    ref: main
+    filter: tag:-ci & tag:-nfs
+    exclude:
+      - /prepare-system$
+      - /unprepare$
+      - /run/main$
+  - name: run-main
+    how: shell
+    tests:
+      - name: /selinux-testsuite/tmt/tests/run/main
+        summary: Run testsuite (MLS test_inet_socket.te patch, then make test)
+        order: 3
+        duration: 20m
+        require:
+          - make
+          - perl-Test
+          - perl-Test-Harness
+          - perl-Test-Simple
+          - perl-lib
+          - selinux-policy-devel
+          - gcc
+          - libselinux-devel
+          - net-tools
+          - netlabel_tools
+          - iptables
+          - nftables
+          - lksctp-tools-devel
+          - attr
+          - libbpf-devel
+          - keyutils-libs-devel
+          - quota
+          - xfsprogs-devel
+          - libuuid-devel
+          - e2fsprogs
+          - f2fs-tools
+          - jfsutils
+          - dosfstools
+          - btrfs-progs
+          - rdma-core-devel
+          - kexec-tools
+          - liburing-devel
+        test: $TMT_TREE/tmt/mls-copr-run-main.sh
+
+execute:
+  how: tmt
