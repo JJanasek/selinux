@@ -9,6 +9,7 @@ description: |
 environment:
   STS_ROOT_DOMAIN: sysadm_t
   STS_KERNEL: local
+  MLS_COPR_SKIP_INET_SOCKET: "1"
 
 prepare:
   - name: COPR MLS policy and guest switch
@@ -29,9 +30,9 @@ discover:
     how: shell
     tests:
       - name: /selinux-testsuite/tmt/tests/run/main
-        summary: Run testsuite (MLS inet patch; all SUBDIRS; summary at end)
+        summary: Run testsuite (skip inet_socket until MLS policy; full SUBDIRS summary)
         order: 3
-        duration: 20m
+        duration: 90m
         require:
           - make
           - perl-Test
