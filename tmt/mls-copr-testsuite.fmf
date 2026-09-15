@@ -29,7 +29,7 @@ discover:
     how: shell
     tests:
       - name: /selinux-testsuite/tmt/tests/run/main
-        summary: Run testsuite (MLS test_inet_socket.te patch, then make test)
+        summary: Run testsuite (inet_socket.te patch; all SUBDIRS tests, no fail-fast)
         order: 3
         duration: 20m
         require:

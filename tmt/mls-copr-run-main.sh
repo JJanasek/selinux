@@ -1,5 +1,6 @@
 #!/bin/bash
 # Upstream /run/main, plus MLS workaround for testsuite policy/test_inet_socket.te.
+# Runs every SUBDIRS */test (no fail-fast); exits non-zero if any failed.
 set -eux
 
 if [ -n "${TMT_PLAN_DATA:-}" ]; then
@@ -27,4 +28,30 @@ if [ -z "$tests_root" ]; then
     exit 1
 fi
 cd "$tests_root"
-exec make test
+
+make all
+chcon -R -t test_file_t .
+
+subdirs=$(make -pn 2>/dev/null | awk '/^SUBDIRS = / { $1 = $2 = ""; sub(/^ /, ""); print; exit }')
+if [ -z "$subdirs" ]; then
+    echo "FAIL: could not read SUBDIRS from Makefile" >&2
+    exit 1
+fi
+
+id -Z
+getenforce
+
+rc=0
+set +e
+for d in $subdirs; do
+    if [ ! -x "$d/test" ]; then
+        echo "SKIP: ${d}/test (missing or not executable)" >&2
+        continue
+    fi
+    echo "======== ${d}/test ========"
+    if ! "./${d}/test"; then
+        rc=1
+    fi
+done
+set -e
+exit "$rc"
