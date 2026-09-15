@@ -86,6 +86,9 @@ nfail=0
 nskip=0
 failed_list=()
 skipped_list=()
+row_idx=()
+row_subdir=()
+row_outcome=()
 
 set +e
 i=0
@@ -94,12 +97,18 @@ for d in "${subdir_list[@]}"; do
     if [ "$skip_inet" = 1 ] && [[ "$d" == inet_socket/* ]]; then
         nskip=$((nskip + 1))
         skipped_list+=("$d (inet_socket; MLS policy)")
+        row_idx+=("$i")
+        row_subdir+=("$d")
+        row_outcome+=("SKIP")
         printf '[SKIP %3d/%d] %s (MLS_COPR_SKIP_INET_SOCKET)\n' "$i" "$total" "$d"
         continue
     fi
     if [ ! -x "$d/test" ]; then
         nskip=$((nskip + 1))
         skipped_list+=("$d")
+        row_idx+=("$i")
+        row_subdir+=("$d")
+        row_outcome+=("SKIP")
         printf '[SKIP %3d/%d] %s (no executable test)\n' "$i" "$total" "$d"
         continue
     fi
@@ -107,11 +116,17 @@ for d in "${subdir_list[@]}"; do
     printf '\n--- [%3d/%d] %s/test ---\n' "$i" "$total" "$d"
     if "./${d}/test"; then
         npass=$((npass + 1))
+        row_idx+=("$i")
+        row_subdir+=("$d")
+        row_outcome+=("PASS")
         printf '[PASS %3d/%d] %s\n' "$i" "$total" "$d"
     else
         nfail=$((nfail + 1))
         rc=1
         failed_list+=("$d")
+        row_idx+=("$i")
+        row_subdir+=("$d")
+        row_outcome+=("FAIL")
         printf '[FAIL %3d/%d] %s\n' "$i" "$total" "$d" >&2
         if [[ "$d" == inet_socket/* ]]; then
             banner "Recent AVC after ${d} failure"
@@ -121,15 +136,27 @@ for d in "${subdir_list[@]}"; do
 done
 set -e
 
-banner "Results"
-echo "executed: ${nrun}  passed: ${npass}  failed: ${nfail}  skipped: ${nskip}  (SUBDIRS entries: ${total})"
+banner "Results summary"
+printf 'PASS: %d   FAIL: %d   SKIP: %d   executed: %d   SUBDIRS: %d\n\n' \
+    "$npass" "$nfail" "$nskip" "$nrun" "$total"
+
+banner "All SUBDIRS (search log for this table)"
+printf '%s\n' '  #    OUTCOME   SUBDIR'
+printf '%s\n' ' ----  --------  --------------------------------'
+for j in "${!row_subdir[@]}"; do
+    printf ' %3d   %-8s  %s\n' "${row_idx[$j]}" "${row_outcome[$j]}" "${row_subdir[$j]}"
+done
+printf '%s\n' ' ----  --------  --------------------------------'
+
 if [ "${#failed_list[@]}" -gt 0 ]; then
-    echo "Failed:"
-    printf '  - %s\n' "${failed_list[@]}"
+    echo ""
+    echo ">>> FAILED (${#failed_list[@]}):"
+    printf '    %s\n' "${failed_list[@]}"
 fi
 if [ "${#skipped_list[@]}" -gt 0 ]; then
-    echo "Skipped:"
-    printf '  - %s\n' "${skipped_list[@]}"
+    echo ""
+    echo ">>> SKIPPED (${#skipped_list[@]}):"
+    printf '    %s\n' "${skipped_list[@]}"
 fi
 
 if [ "$nrun" -eq 0 ]; then
