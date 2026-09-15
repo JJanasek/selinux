@@ -12,16 +12,19 @@ if [ -n "${TMT_PLAN_DATA:-}" ]; then
 else
     search_root=/var/ARTIFACTS
 fi
-policy_dir=$(find "$search_root" -type d -path '*/discover/selinux-testsuite/policy' 2>/dev/null | head -n 1)
-if [ -z "$policy_dir" ]; then
-    policy_dir=$(find "$search_root" -type d -name policy -path '*/selinux-testsuite/*' 2>/dev/null | head -n 1)
+# tmt fmf discover clones the repo under discover/.../selinux-testsuite/tests/
+test_te=$(find "$search_root" \( \
+    -path '*/discover/selinux-testsuite/tests/policy/test_inet_socket.te' \
+    -o -path '*/discover/selinux-testsuite/policy/test_inet_socket.te' \
+    \) 2>/dev/null | head -n 1)
+if [ -z "$test_te" ]; then
+    test_te=$(find "$search_root" -name test_inet_socket.te -path '*/selinux-testsuite/*/policy/*' 2>/dev/null | head -n 1)
 fi
-if [ -z "$policy_dir" ] || [ ! -f "$policy_dir/test_inet_socket.te" ]; then
-    echo "selinux-testsuite policy/ not found under ${search_root}" >&2
+if [ -z "$test_te" ]; then
+    echo "test_inet_socket.te not found under ${search_root}" >&2
     exit 1
 fi
-
-test_te="$policy_dir/test_inet_socket.te"
+policy_dir=$(dirname "$test_te")
 sed -i '/mcs_constrained(test_inet_server_t)/d' "$test_te"
 if grep -q 'mcs_constrained(test_inet_server_t)' "$test_te"; then
     echo "mcs_constrained(test_inet_server_t) still present in ${test_te}" >&2
@@ -36,10 +39,10 @@ if [ ! -f "$test_global" ]; then
     exit 1
 fi
 sed -i \
-    -e 's/^#allow sysadm_t self:process setexec;/allow sysadm_t self:process setexec;/' \
-    -e 's/^#selinux_get_fs_mount(sysadm_t)/selinux_get_fs_mount(sysadm_t)/' \
+    -e 's/^\([[:space:]]*\)#allow sysadm_t self:process setexec;/\1allow sysadm_t self:process setexec;/' \
+    -e 's/^\([[:space:]]*\)#selinux_get_fs_mount(sysadm_t)/\1selinux_get_fs_mount(sysadm_t)/' \
     "$test_global"
-if ! grep -q '^allow sysadm_t self:process setexec;' "$test_global"; then
+if ! grep -q '^[[:space:]]*allow sysadm_t self:process setexec;' "$test_global"; then
     echo "sysadm setexec rule still missing in ${test_global}" >&2
     exit 1
 fi
