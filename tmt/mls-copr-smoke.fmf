@@ -1,0 +1,36 @@
+summary: AC1 MLS install + enforcing without cloud-init AVCs
+description: |
+    Acceptance criterion 1: install selinux-policy-mls (from COPR when
+    pinned), switch to MLS enforcing, verify root→sysadm_u, and fail if
+    any cloud-init related AVC denials appear since boot.
+
+    Uses prepare_for_mls() via mls-copr-prepare.sh. Policy fixes for
+    cloud-init under MLS belong in COPR/selinux-policy, not guest overlays.
+
+    Env: COPR_REPO and COPR_SELINUX_POLICY_MLS_NVR (or COPR_RELEASE_MATCH).
+    SKIP_COPR_INSTALL=1 when TF installs the build via --fedora-copr-build.
+
+environment:
+  STS_ROOT_DOMAIN: sysadm_t
+  STS_KERNEL: local
+
+prepare:
+  - name: COPR MLS policy and guest switch
+    how: shell
+    script: $TMT_TREE/tmt/mls-copr-prepare.sh
+
+discover:
+  - name: ac1-smoke
+    how: shell
+    tests:
+      - name: /tmt/mls-copr-smoke/check
+        summary: Verify MLS enforcing and no cloud-init AVCs
+        order: 1
+        duration: 5m
+        require:
+          - audit
+          - policycoreutils-python-utils
+        test: $TMT_TREE/tmt/mls-copr-smoke-check.sh
+
+execute:
+  how: tmt

@@ -1,6 +1,7 @@
 summary: selinux-testsuite on MLS (COPR selinux-policy-mls)
 description: |
-    COPR policy RPMs, MLS enforcing, sysadm_t. Pin COPR_REPO and COPR_SELINUX_POLICY_MLS_NVR.
+    Full upstream selinux-testsuite under MLS (not AC1). For AC1 cloud-init
+    AVC gate see /tmt/mls-copr-smoke. Pin COPR_REPO and COPR_SELINUX_POLICY_MLS_NVR.
 
 environment:
   STS_ROOT_DOMAIN: sysadm_t

@@ -1,8 +1,12 @@
 #!/bin/bash
-# COPR selinux-policy triple, MLS enforcing, sysadm_t + TF SSH. Env: COPR_REPO, COPR_SELINUX_POLICY_MLS_NVR.
+# COPR selinux-policy triple, MLS enforcing via prepare_for_mls, TF SSH/sysadm.
+# Env: COPR_REPO, COPR_SELINUX_POLICY_MLS_NVR (or PR_NUMBER / COPR_RELEASE_MATCH).
 set -eo pipefail
 
 reboot_count="${TMT_REBOOT_COUNT:-0}"
+
+# shellcheck source=/dev/null
+source "$TMT_TREE/tmt/prepare_for_mls.sh"
 
 verify_copr_policy_set() {
     local mls_evr policy_evr
@@ -67,17 +71,15 @@ case "$reboot_count" in
         dnf install -y policycoreutils-python-utils audit
         verify_copr_policy_set
     fi
-    sed -i 's/^SELINUXTYPE=.*/SELINUXTYPE=mls/' /etc/selinux/config
-    semanage login -N -m -s sysadm_u root
-    touch /.autorelabel
+    prepare_for_mls_configure
     sed -i 's/^SELINUX=.*/SELINUX=permissive/' /etc/selinux/config
     mkdir -p /etc/cloud/cloud.cfg.d
     echo 'ssh_deletekeys: false' > /etc/cloud/cloud.cfg.d/99-preserve-ssh-host-keys.cfg
     cloud-init clean --logs
-    tmt-reboot -t 1200
+    prepare_for_mls_reboot
     ;;
 1)
-    restorecon -RF / 2>&1 | tail -50
+    prepare_for_mls_force_relabel
     rm -f /.autorelabel
     systemctl mask selinux-autorelabel.service
     semanage boolean -n -m --on ssh_sysadm_login
