@@ -109,7 +109,16 @@ case "$reboot_count" in
     prepare_for_mls_reboot
     ;;
 1)
-    # Autorelabel from fixfiles -F onboot has finished; switch to enforcing.
+    # After fixfiles -F onboot reboot: still permissive MLS. Dump AVCs from
+    # this boot when asked (diagnostic); otherwise switch to enforcing.
+    if [ "${MLS_STAY_PERMISSIVE:-0}" = 1 ]; then
+        echo "=== sestatus (permissive MLS diagnostic) ==="
+        sestatus || true
+        echo "=== ausearch AVC/USER_AVC since boot ==="
+        ausearch -m avc,user_avc -i --input-logs -ts boot || true
+        echo "=== end ausearch ==="
+        exit 0
+    fi
     prepare_for_mls_set_enforcing
     prepare_for_mls_reboot
     ;;
