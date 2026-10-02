@@ -1,8 +1,10 @@
 summary: selinux-testsuite on MLS (COPR selinux-policy-mls)
 description: |
-    Same upstream selinux-testsuite as /tmt/ci, under MLS after
-    prepare_for_mls (root→sysadm_u) and COPR selinux-policy-mls.
-    Prepare final leg checks enforcing MLS, sysadm_u, and no cloud-init AVCs.
+    Same upstream selinux-testsuite as /tmt/ci, under MLS after switching
+    the guest with prepare_for_mls (RHEL MLS switch procedure: permissive,
+    fixfiles -F onboot, reboot, then enforcing) and installing
+    selinux-policy-mls from COPR. root is mapped to sysadm_u. The final
+    prepare leg checks enforcing MLS, sysadm_u, and no cloud-init AVCs.
 
     CI: tf_testsuite runs /tmt/plans/ci; tf_testsuite_mls runs this plan
     (/tmt/mls-copr-testsuite).
