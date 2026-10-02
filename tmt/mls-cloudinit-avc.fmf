@@ -1,0 +1,26 @@
+summary: Quick MLS permissive + cloud-init AVC dump
+description: |
+    Diagnostic only (not CI). Install COPR selinux-policy-mls, switch to
+    MLS in permissive mode with one reboot (no full fixfiles -F onboot),
+    restart all cloud-init services, print ausearch AVCs since boot.
+
+    Env: COPR_REPO (required).
+
+prepare:
+  - name: COPR MLS permissive switch
+    how: shell
+    script: $TMT_TREE/tmt/mls-cloudinit-avc-prepare.sh
+
+discover:
+  - name: cloudinit-avc
+    how: shell
+    tests:
+      - name: /cloudinit-avc/run
+        duration: 20m
+        require:
+          - audit
+          - systemd
+        test: $TMT_TREE/tmt/mls-cloudinit-avc-run.sh
+
+execute:
+  how: tmt
