@@ -1,21 +1,12 @@
-summary: selinux-testsuite on MLS (COPR selinux-policy-mls)
+summary: Fedora SELinux tier1 tests on MLS (COPR selinux-policy-mls)
 description: |
-    Same upstream selinux-testsuite as /tmt/ci, under MLS after switching
-    the guest with prepare_for_mls (RHEL MLS switch procedure: permissive,
-    fixfiles -F onboot, reboot, then enforcing) and installing
-    selinux-policy-mls from COPR. root is mapped to sysadm_u. The final
-    prepare leg checks enforcing MLS, sysadm_u, and no cloud-init AVCs.
-
-    CI: tf_testsuite runs /tmt/plans/ci; tf_testsuite_mls runs this plan
-    (/tmt/mls-copr-testsuite).
+    Switch the guest to MLS with prepare_for_mls (RHEL MLS switch:
+    permissive, fixfiles -F onboot, reboot, then enforcing), install
+    selinux-policy-mls from COPR, then run Fedora package SELinux tier1
+    integration tests from https://src.fedoraproject.org/tests/selinux.git
+    (same filter as /tier1-filtered: tier:1, exclude failinfedora and epel).
 
     Env: COPR_REPO (required in CI); optional COPR_SELINUX_POLICY_MLS_NVR.
-    inet_socket skipped until MLS allows runcon (MLS_COPR_SKIP_INET_SOCKET=1).
-
-environment:
-  STS_ROOT_DOMAIN: sysadm_t
-  STS_KERNEL: local
-  MLS_COPR_SKIP_INET_SOCKET: "1"
 
 prepare:
   - name: COPR MLS policy and guest switch
@@ -23,50 +14,10 @@ prepare:
     script: $TMT_TREE/tmt/mls-copr-prepare.sh
 
 discover:
-  - name: selinux-testsuite
+  - name: fedora-selinux-tier1
     how: fmf
-    url: https://github.com/SELinuxProject/selinux-testsuite
-    ref: main
-    filter: tag:-ci & tag:-nfs
-    exclude:
-      - /prepare-system$
-      - /unprepare$
-      - /run/main$
-  - name: run-main
-    how: shell
-    tests:
-      - name: /selinux-testsuite/tmt/tests/run/main
-        order: 3
-        duration: 90m
-        require:
-          - make
-          - perl-Test
-          - perl-Test-Harness
-          - perl-Test-Simple
-          - perl-lib
-          - selinux-policy-devel
-          - gcc
-          - libselinux-devel
-          - net-tools
-          - netlabel_tools
-          - iptables
-          - nftables
-          - lksctp-tools-devel
-          - attr
-          - libbpf-devel
-          - keyutils-libs-devel
-          - quota
-          - xfsprogs-devel
-          - libuuid-devel
-          - e2fsprogs
-          - f2fs-tools
-          - jfsutils
-          - dosfstools
-          - btrfs-progs
-          - rdma-core-devel
-          - kexec-tools
-          - liburing-devel
-        test: $TMT_TREE/tmt/mls-copr-run-main.sh
+    url: https://src.fedoraproject.org/tests/selinux.git
+    filter: "tier:1 & tag:-failinfedora & tag:-epel"
 
 execute:
   how: tmt
