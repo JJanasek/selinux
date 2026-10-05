@@ -109,16 +109,34 @@ case "$reboot_count" in
     prepare_for_mls_reboot
     ;;
 1)
-    # After fixfiles -F onboot reboot: still permissive MLS. Dump AVCs from
-    # this boot when asked (diagnostic); otherwise switch to enforcing.
+    # Docs: after the relabel reboot, check denials, then enforcing + reboot.
+    # tmt may resume on SSH before selinux-autorelabel finishes; leftover
+    # /.autorelabel + enforcing is the BZ 1843870 reboot loop.
+    echo "=== MLS checkpoint after relabel reboot ==="
+    sestatus || true
+    echo "=== /.autorelabel ==="
+    if [ -e /.autorelabel ]; then
+        ls -l /.autorelabel
+        cat /.autorelabel || true
+    else
+        echo "absent"
+    fi
+    echo "=== selinux-autorelabel.service ==="
+    systemctl is-active selinux-autorelabel.service || true
+    systemctl is-enabled selinux-autorelabel.service || true
+    systemctl --no-pager --full status selinux-autorelabel.service || true
+    echo "=== ssh_sysadm_login ==="
+    getsebool ssh_sysadm_login || true
     if [ "${MLS_STAY_PERMISSIVE:-0}" = 1 ]; then
-        echo "=== sestatus (permissive MLS diagnostic) ==="
-        sestatus || true
-        echo "=== ausearch AVC/USER_AVC since boot ==="
-        ausearch -m avc,user_avc -i --input-logs -ts boot || true
+        echo "=== ausearch AVC/USER_AVC/SELINUX_ERR since boot ==="
+        ausearch -m avc,user_avc,selinux_err,user_selinux_err -i --input-logs -ts boot || true
         echo "=== end ausearch ==="
         exit 0
     fi
+    restorecon -RF / 2>&1 | tail -50 || true
+    rm -f /.autorelabel
+    echo "=== /.autorelabel after cleanup ==="
+    ls -l /.autorelabel 2>&1 || true
     prepare_for_mls_set_enforcing
     prepare_for_mls_reboot
     ;;
