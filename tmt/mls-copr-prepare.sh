@@ -93,6 +93,68 @@ preserve_ssh_host_keys() {
     echo 'ssh_deletekeys: false' > /etc/cloud/cloud.cfg.d/99-preserve-ssh-host-keys.cfg
 }
 
+mls_checkpoint() {
+    echo "=== MLS checkpoint after relabel reboot ==="
+    sestatus || true
+    echo "=== /.autorelabel ==="
+    if [ -e /.autorelabel ]; then
+        ls -l /.autorelabel
+        cat /.autorelabel || true
+    else
+        echo "absent"
+    fi
+    echo "=== selinux-autorelabel.service ==="
+    systemctl is-active selinux-autorelabel.service || true
+    systemctl --no-pager --full status selinux-autorelabel.service || true
+    echo "=== ssh_sysadm_login ==="
+    getsebool ssh_sysadm_login || true
+    echo "=== critical path labels ==="
+    ls -Zd / /var /etc /usr || true
+}
+
+# tmt can resume on SSH before on-boot autorelabel finishes.
+wait_for_autorelabel() {
+    local deadline now
+    deadline=$(( $(date +%s) + 1200 ))
+    while [ -e /.autorelabel ] \
+        || systemctl is-active --quiet selinux-autorelabel.service 2>/dev/null; do
+        now=$(date +%s)
+        if [ "$now" -ge "$deadline" ]; then
+            echo "FAIL: selinux-autorelabel still running after 20m" >&2
+            systemctl --no-pager --full status selinux-autorelabel.service >&2 || true
+            exit 1
+        fi
+        echo "waiting for selinux-autorelabel / /.autorelabel ($((deadline - now))s left)"
+        sleep 15
+    done
+}
+
+# On-boot fixfiles -F often finishes too fast for a full MLS relabel on TF.
+# Finish under permissive, refuse enforcing if critical paths stay unlabeled.
+finish_mls_labels() {
+    local start end path ctx
+    echo "=== critical path labels before fixfiles ==="
+    ls -Zd / /var /etc /usr || true
+    echo "=== fixfiles -F / (permissive MLS) ==="
+    start=$(date +%s)
+    fixfiles -F / 2>&1 | tail -100 || true
+    end=$(date +%s)
+    echo "fixfiles duration: $((end - start))s"
+    rm -f /.autorelabel
+    systemctl mask selinux-autorelabel.service
+    echo "=== critical path labels after fixfiles ==="
+    ls -Zd / /var /etc /usr || true
+    for path in / /var /etc /usr; do
+        ctx=$(ls -Zd "$path" | awk '{print $1}')
+        case "$ctx" in
+            *unlabeled_t*)
+                echo "FAIL: $path still unlabeled_t ($ctx)" >&2
+                exit 1
+                ;;
+        esac
+    done
+}
+
 case "$reboot_count" in
 0)
     if [ "${STS_KERNEL:-}" = local ]; then
@@ -109,34 +171,15 @@ case "$reboot_count" in
     prepare_for_mls_reboot
     ;;
 1)
-    # Docs: after the relabel reboot, check denials, then enforcing + reboot.
-    # tmt may resume on SSH before selinux-autorelabel finishes; leftover
-    # /.autorelabel + enforcing is the BZ 1843870 reboot loop.
-    echo "=== MLS checkpoint after relabel reboot ==="
-    sestatus || true
-    echo "=== /.autorelabel ==="
-    if [ -e /.autorelabel ]; then
-        ls -l /.autorelabel
-        cat /.autorelabel || true
-    else
-        echo "absent"
-    fi
-    echo "=== selinux-autorelabel.service ==="
-    systemctl is-active selinux-autorelabel.service || true
-    systemctl is-enabled selinux-autorelabel.service || true
-    systemctl --no-pager --full status selinux-autorelabel.service || true
-    echo "=== ssh_sysadm_login ==="
-    getsebool ssh_sysadm_login || true
+    mls_checkpoint
     if [ "${MLS_STAY_PERMISSIVE:-0}" = 1 ]; then
         echo "=== ausearch AVC/USER_AVC/SELINUX_ERR since boot ==="
         ausearch -m avc,user_avc,selinux_err,user_selinux_err -i --input-logs -ts boot || true
         echo "=== end ausearch ==="
         exit 0
     fi
-    restorecon -RF / 2>&1 | tail -50 || true
-    rm -f /.autorelabel
-    echo "=== /.autorelabel after cleanup ==="
-    ls -l /.autorelabel 2>&1 || true
+    wait_for_autorelabel
+    finish_mls_labels
     prepare_for_mls_set_enforcing
     prepare_for_mls_reboot
     ;;
