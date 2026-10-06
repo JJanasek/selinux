@@ -21,8 +21,12 @@ verify_copr_policy_set() {
 install_copr_policy_set() {
     dnf install -y 'dnf-command(copr)' || true
     dnf -y copr enable "${COPR_REPO:?set COPR_REPO}"
-    dnf distro-sync -y --allowerasing selinux-policy
-    dnf install -y --allowerasing selinux-policy-devel selinux-policy-mls policycoreutils-python-utils audit
+    local evr=${COPR_SELINUX_POLICY_MLS_NVR:-$(dnf --disablerepo='*' --enablerepo='*copr*' repoquery --latest-limit=1 --qf '%{version}-%{release}' selinux-policy-mls)}
+    evr=${evr#selinux-policy-mls-}
+    : "${evr:?no COPR selinux-policy-mls}"
+    dnf install -y --allowerasing \
+        "selinux-policy-$evr" "selinux-policy-devel-$evr" "selinux-policy-mls-$evr" \
+        policycoreutils-python-utils audit
     verify_copr_policy_set
 }
 
