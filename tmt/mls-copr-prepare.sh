@@ -25,10 +25,10 @@ verify_copr_policy_set() {
 install_copr_policy_set() {
     dnf install -y 'dnf-command(copr)' || true
     dnf -y copr enable "${COPR_REPO:?set COPR_REPO}"
-    # Keep Fedora repos: --disablerepo=* cannot resolve devel deps (m4, make, policycoreutils-devel).
-    # upgrade first so already-installed stock selinux-policy is not left at compose NVR.
-    dnf upgrade -y --allowerasing selinux-policy selinux-policy-devel
-    dnf install -y --allowerasing selinux-policy-mls policycoreutils-python-utils audit
+    dnf distro-sync -y --allowerasing selinux-policy
+    dnf install -y --allowerasing \
+        selinux-policy-devel selinux-policy-mls \
+        policycoreutils-python-utils audit
     rpm -q selinux-policy selinux-policy-devel selinux-policy-mls
     verify_copr_policy_set
 }
