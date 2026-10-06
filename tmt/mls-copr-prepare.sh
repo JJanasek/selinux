@@ -84,11 +84,6 @@ verify_mls_ready() {
     verify_copr_policy_set
 }
 
-preserve_ssh_host_keys() {
-    mkdir -p /etc/cloud/cloud.cfg.d
-    echo 'ssh_deletekeys: false' > /etc/cloud/cloud.cfg.d/99-preserve-ssh-host-keys.cfg
-}
-
 mls_checkpoint() {
     echo "=== MLS checkpoint after relabel reboot ==="
     sestatus || true
@@ -164,7 +159,6 @@ case "$reboot_count" in
         dnf install -y policycoreutils-python-utils audit
         verify_copr_policy_set
     fi
-    preserve_ssh_host_keys
     prepare_for_mls_configure
     prepare_for_mls_reboot
     ;;
