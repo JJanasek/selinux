@@ -186,9 +186,6 @@ finish_mls_labels() {
 
 case "$reboot_count" in
 0)
-    if [ "${STS_KERNEL:-}" = local ]; then
-        dnf install -y kernel-devel
-    fi
     if [ "${SKIP_COPR_INSTALL:-0}" != 1 ]; then
         install_copr_policy_set
     else

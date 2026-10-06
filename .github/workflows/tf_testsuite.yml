@@ -19,7 +19,7 @@ jobs:
           tmt_plan_regex: '/tmt/plans/ci$'
           pull_request_status_name: Fedora
 
-  # MLS: prepare_for_mls + COPR selinux-policy-mls + same testsuite
+  # MLS: prepare_for_mls + COPR selinux-policy-mls + Fedora tier1 tests
   tf_testsuite_mls:
     runs-on: ubuntu-latest
     strategy:
@@ -27,7 +27,7 @@ jobs:
       matrix:
         arch: [x86_64, aarch64]
     steps:
-      - name: Schedule MLS testsuite on Testing Farm
+      - name: Schedule MLS tier1 on Testing Farm
         uses: sclorg/testing-farm-as-github-action@main
         with:
           api_key: ${{ secrets.TESTING_FARM_API_TOKEN }}
@@ -36,6 +36,5 @@ jobs:
           compose: Fedora-44
           tmt_plan_regex: '/tmt/mls-copr-testsuite$'
           pull_request_status_name: Fedora MLS
-          # STS_* / MLS_COPR_SKIP_* come from the plan fmf environment.
           variables: COPR_REPO=jjanasek/selinux-policy-mls-testsuite
           timeout: '240'
