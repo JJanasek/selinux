@@ -48,7 +48,6 @@ wait_for_autorelabel() {
 
 finish_mls_labels() {
     time fixfiles -F restore / || { echo "FAIL: fixfiles restore failed" >&2; exit 1; }
-    rm -f /.autorelabel
     systemctl mask selinux-autorelabel.service
 }
 
