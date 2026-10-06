@@ -23,33 +23,12 @@ verify_copr_policy_set() {
 }
 
 install_copr_policy_set() {
-    local copr_slug="${COPR_REPO:?set COPR_REPO}"
-    local copr_repoid_match="${copr_slug##*/}"
-    local copr_repoid pinned_mls_nvr suffix arch
-    local -a pkgs
-
     dnf install -y 'dnf-command(copr)' || true
-    dnf -y copr enable "${copr_slug}"
-
-    copr_repoid=$(dnf -y repolist --enabled | awk -v p="$copr_repoid_match" '$0 ~ p {print $1; exit}')
-    [ -n "$copr_repoid" ] || { echo "FAIL: no enabled repo matching ${copr_repoid_match}" >&2; dnf -y repolist --enabled >&2 || true; exit 1; }
-
-    pinned_mls_nvr="${COPR_SELINUX_POLICY_MLS_NVR:-$(dnf -y repoquery --repo="$copr_repoid" --qf '%{name}-%{evr}.%{arch}\n' selinux-policy-mls | sort -V | tail -n1)}"
-    [ -n "$pinned_mls_nvr" ] || { echo "FAIL: no selinux-policy-mls in ${copr_repoid}" >&2; exit 1; }
-
-    suffix="${pinned_mls_nvr#selinux-policy-mls-}"
-    arch="${suffix##*.}"
-    suffix="${suffix%."$arch"}"
-
-    pkgs=(
-        "selinux-policy-${suffix}.${arch}"
-        "selinux-policy-devel-${suffix}.${arch}"
-        "selinux-policy-mls-${suffix}.${arch}"
-    )
-
-    echo "=== installing COPR policy set ==="
-    printf '%s\n' "${pkgs[@]}"
-    dnf install -y "${pkgs[@]}" policycoreutils-python-utils audit
+    dnf -y copr enable "${COPR_REPO:?set COPR_REPO}"
+    # Only COPR repos: plain "dnf install selinux-policy*" keeps stock compose NVRs.
+    dnf install -y --allowerasing --disablerepo='*' --enablerepo='*copr*' \
+        selinux-policy selinux-policy-devel selinux-policy-mls \
+        policycoreutils-python-utils audit
     rpm -q selinux-policy selinux-policy-devel selinux-policy-mls
     verify_copr_policy_set
 }
