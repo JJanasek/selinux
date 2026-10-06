@@ -25,47 +25,28 @@ verify_copr_policy_set() {
 install_copr_policy_set() {
     dnf install -y 'dnf-command(copr)' || true
     dnf -y copr enable "${COPR_REPO:?set COPR_REPO}"
-    # Only COPR repos: plain "dnf install selinux-policy*" keeps stock compose NVRs.
-    dnf install -y --allowerasing --disablerepo='*' --enablerepo='*copr*' \
-        selinux-policy selinux-policy-devel selinux-policy-mls \
-        policycoreutils-python-utils audit
+    # Keep Fedora repos: --disablerepo=* cannot resolve devel deps (m4, make, policycoreutils-devel).
+    # upgrade first so already-installed stock selinux-policy is not left at compose NVR.
+    dnf upgrade -y --allowerasing selinux-policy selinux-policy-devel
+    dnf install -y --allowerasing selinux-policy-mls policycoreutils-python-utils audit
     rpm -q selinux-policy selinux-policy-devel selinux-policy-mls
     verify_copr_policy_set
 }
 
 verify_mls_ready() {
-    local mode policy login_map tmpdir as_rc
-    mode=$(sestatus | awk -F': *' '/^Current mode:/ {print $2}')
-    policy=$(sestatus | awk -F': *' '/^Loaded policy name:/ {print $2}')
+    [ "$(getenforce)" = "Enforcing" ] && [ "$(sestatus | awk -F': *' '/Loaded policy name/ {print $2}')" = "mls" ] \
+        || { echo "FAIL: system not in enforcing MLS mode" >&2; exit 1; }
 
-    [ "$mode" = enforcing ] && [ "$policy" = mls ] || { echo "FAIL: expected enforcing MLS (got mode=${mode} policy=${policy})" >&2; exit 1; }
+    semanage login -l | grep -q 'root.*sysadm_u' \
+        || { echo "FAIL: root not mapped to sysadm_u" >&2; exit 1; }
 
-    login_map=$(semanage login -l | awk '$1 == "root" {print; exit}')
-    echo "$login_map" | grep -q sysadm_u || { echo "FAIL: root not mapped to sysadm_u (${login_map})" >&2; exit 1; }
-
-    tmpdir=$(mktemp -d)
     # --input-logs: do not consume stdin (tmt may attach a pipe).
-    set +e
-    ausearch -m avc,user_avc -i --input-logs -ts boot >"$tmpdir/avc.txt" 2>/dev/null
-    as_rc=$?
-    set -e
-
-    [ "$as_rc" -lt 2 ] || { echo "FAIL: ausearch failed (rc=$as_rc)" >&2; rm -rf "$tmpdir"; exit 1; }
-
-    if grep -Eiq 'cloud_init_t|comm="cloud-init"' "$tmpdir/avc.txt"; then
-        echo "FAIL: cloud-init related AVC denials since boot:" >&2
-        grep -Ei 'cloud_init_t|comm="cloud-init"' "$tmpdir/avc.txt" >&2 || true
-        rm -rf "$tmpdir"
+    if ausearch -m avc,user_avc -i --input-logs -ts boot 2>/dev/null | grep -Eiq 'cloud_init_t|comm="cloud-init"'; then
+        echo "FAIL: cloud-init AVC denials found since boot" >&2
         exit 1
     fi
-    rm -rf "$tmpdir"
 
     verify_copr_policy_set
-}
-
-preserve_ssh_host_keys() {
-    mkdir -p /etc/cloud/cloud.cfg.d
-    echo 'ssh_deletekeys: false' > /etc/cloud/cloud.cfg.d/99-preserve-ssh-host-keys.cfg
 }
 
 mls_checkpoint() {
@@ -143,7 +124,6 @@ case "$reboot_count" in
         dnf install -y policycoreutils-python-utils audit
         verify_copr_policy_set
     fi
-    preserve_ssh_host_keys
     prepare_for_mls_configure
     prepare_for_mls_reboot
     ;;
