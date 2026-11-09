@@ -23,11 +23,17 @@
 #include "test-expander-users.h"
 #include "helpers.h"
 
+#include <sepol/policydb/expand.h>
+#include <sepol/policydb/link.h>
 #include <sepol/policydb/policydb.h>
+#include <sepol/user_record.h>
+#include <sepol/users.h>
 #include <CUnit/Basic.h>
 #include <stdlib.h>
+#include <string.h>
 
 extern policydb_t user_expanded;
+extern int mls;
 
 static void check_user_roles(policydb_t *p, const char *user_name,
 			     const char **role_names, int num_roles)
@@ -74,4 +80,58 @@ void test_expander_user_mapping(void)
 	const char *roles1[] = { "user_check_1_1_r", "user_check_1_2_r" };
 
 	check_user_roles(&user_expanded, "user_check_1", roles1, 2);
+}
+
+/*
+ * sepol_user_modify() must register a scope[SYM_USERS] datum for new
+ * users. Without that entry, expand_module() treats the user as
+ * undeclared and silently drops it.
+ */
+void test_user_modify_registers_scope(void)
+{
+	sepol_policydb_t spdb;
+	policydb_t expanded;
+	sepol_user_t *user = NULL;
+	sepol_user_key_t *key = NULL;
+	scope_datum_t *scope;
+	const char *roles[] = { "user_r" };
+	const char *uname = "api_added_u";
+
+	memset(&spdb, 0, sizeof(spdb));
+	CU_ASSERT_EQUAL_FATAL(test_load_policy(&spdb.p, POLICY_BASE, mls,
+					       "test-expander",
+					       "user-base.conf"),
+			      0);
+
+	CU_ASSERT_EQUAL_FATAL(sepol_user_create(NULL, &user), 0);
+	CU_ASSERT_EQUAL_FATAL(sepol_user_set_name(NULL, user, uname), 0);
+	CU_ASSERT_EQUAL_FATAL(sepol_user_set_roles(NULL, user, roles, 1), 0);
+	if (mls) {
+		CU_ASSERT_EQUAL_FATAL(
+			sepol_user_set_mlslevel(NULL, user, "s0"), 0);
+		CU_ASSERT_EQUAL_FATAL(
+			sepol_user_set_mlsrange(NULL, user, "s0"), 0);
+	}
+	CU_ASSERT_EQUAL_FATAL(sepol_user_key_create(NULL, uname, &key), 0);
+	CU_ASSERT_EQUAL_FATAL(sepol_user_modify(NULL, &spdb, key, user), 0);
+
+	scope = hashtab_search(spdb.p.scope[SYM_USERS].table, uname);
+	CU_ASSERT_PTR_NOT_NULL_FATAL(scope);
+	CU_ASSERT_EQUAL(scope->scope, SCOPE_DECL);
+	CU_ASSERT(scope->decl_ids_len >= 1);
+
+	CU_ASSERT_PTR_NOT_NULL(
+		hashtab_search(spdb.p.p_users.table, uname));
+
+	CU_ASSERT_EQUAL_FATAL(policydb_init(&expanded), 0);
+	CU_ASSERT_EQUAL_FATAL(link_modules(NULL, &spdb.p, NULL, 0, 0), 0);
+	CU_ASSERT_EQUAL_FATAL(expand_module(NULL, &spdb.p, &expanded, 0, 0),
+			      0);
+	CU_ASSERT_PTR_NOT_NULL(
+		hashtab_search(expanded.p_users.table, uname));
+
+	policydb_destroy(&expanded);
+	policydb_destroy(&spdb.p);
+	sepol_user_key_free(key);
+	sepol_user_free(user);
 }

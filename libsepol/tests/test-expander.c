@@ -285,6 +285,11 @@ int expander_add_tests(CU_pSuite suite)
 		CU_cleanup_registry();
 		return CU_get_error();
 	}
+	if (NULL == CU_add_test(suite, "user_modify_registers_scope",
+				test_user_modify_registers_scope)) {
+		CU_cleanup_registry();
+		return CU_get_error();
+	}
 	if (NULL == CU_add_test(suite, "expander_alias", test_expander_alias)) {
 		CU_cleanup_registry();
 		return CU_get_error();

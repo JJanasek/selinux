@@ -23,5 +23,6 @@
 #define __TEST_EXPANDER_USER_H__
 
 void test_expander_user_mapping(void);
+void test_user_modify_registers_scope(void);
 
 #endif

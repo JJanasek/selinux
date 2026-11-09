@@ -9,6 +9,7 @@
 #include <sepol/policydb/policydb.h>
 #include <sepol/policydb/hashtab.h>
 #include <sepol/policydb/expand.h>
+#include <sepol/policydb/util.h>
 #include "user_internal.h"
 #include "mls.h"
 
@@ -115,6 +116,9 @@ int sepol_user_modify(sepol_handle_t *handle, sepol_policydb_t *p,
 	user_datum_t *usrdatum = NULL;
 	role_datum_t *roldatum;
 	unsigned int i;
+
+	hashtab_key_t scope_key = NULL;
+	scope_datum_t *scope_datum = NULL;
 
 	context_struct_t context;
 	unsigned bit;
@@ -227,6 +231,32 @@ int sepol_user_modify(sepol_handle_t *handle, sepol_policydb_t *p,
 	if (new) {
 		void *tmp_ptr;
 
+		/*
+		 * Prepare (but do not yet insert) a scope_datum for the new
+		 * user up front, mirroring symtab_insert() in policydb.c:
+		 * without a scope_datum, is_id_enabled() (avrule_block.c)
+		 * treats a user as "not declared", so it would otherwise be
+		 * silently dropped by any later expand_module()/
+		 * link_modules() call even though it is fully present in
+		 * p_users/user_val_to_struct. A user added through this
+		 * public API is always an unconditional, top-level
+		 * declaration -- which is exactly decl_id 1, the id
+		 * checkpolicy assigns to the first declaration of a
+		 * policy's global avrule block.
+		 */
+		scope_key = strdup(cname);
+		if (!scope_key)
+			goto omem;
+		scope_datum = malloc(sizeof(*scope_datum));
+		if (!scope_datum)
+			goto omem;
+		scope_datum->scope = SCOPE_DECL;
+		scope_datum->decl_ids = NULL;
+		scope_datum->decl_ids_len = 0;
+		if (add_i_to_a(1, &scope_datum->decl_ids_len,
+			       &scope_datum->decl_ids) == -1)
+			goto omem;
+
 		/* Ensure reverse lookup array has enough space */
 		tmp_ptr = reallocarray(policydb->user_val_to_struct,
 				       policydb->p_users.nprim + 1,
@@ -259,6 +289,23 @@ int sepol_user_modify(sepol_handle_t *handle, sepol_policydb_t *p,
 		policydb->p_user_val_to_name[usrdatum->s.value - 1] = name;
 		policydb->user_val_to_struct[usrdatum->s.value - 1] = usrdatum;
 		name = NULL;
+		/* policydb now owns usrdatum; prevent error path from freeing */
+		new = 0;
+
+		/*
+		 * Register the user's scope immediately after commit so a
+		 * later expand_module()/link_modules() cannot silently drop
+		 * it. Insert can only fail on OOM here -- scope[SYM_USERS]
+		 * and p_users stay in lockstep on every insertion path, so
+		 * cname cannot already be present. Mirror types.c /
+		 * symtab_insert() ordering: scope before any further work
+		 * that can still fail (role_set_expand below).
+		 */
+		if (hashtab_insert(policydb->scope[SYM_USERS].table, scope_key,
+				   scope_datum) < 0)
+			goto omem;
+		scope_key = NULL;
+		scope_datum = NULL;
 
 		/* Expand roles */
 		if (role_set_expand(&usrdatum->roles, &usrdatum->cache,
@@ -275,10 +322,15 @@ omem:
 	ERR(handle, "out of memory");
 
 err:
-	ERR(handle, "could not load %s into policy", name);
+	ERR(handle, "could not load %s into policy", cname);
 
 	free(name);
 	free(roles);
+	free(scope_key);
+	if (scope_datum) {
+		free(scope_datum->decl_ids);
+		free(scope_datum);
+	}
 	if (new && usrdatum) {
 		role_set_destroy(&usrdatum->roles);
 		free(usrdatum);
