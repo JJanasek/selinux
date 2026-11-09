@@ -4,6 +4,7 @@
 #include <sepol/policydb/avtab.h>
 #include <sepol/policydb/conditional.h>
 #include <sepol/policydb/policydb.h>
+#include <stddef.h>
 #include <stdlib.h>
 
 #include "av_rule_internal.h"
@@ -14,6 +15,7 @@
 struct sepol_cond_iter {
 	const cond_node_t *cur;
 	const cond_node_t *next;
+	size_t count;
 };
 
 int sepol_cond_iter_create(sepol_handle_t *handle, const sepol_policydb_t *p,
@@ -21,7 +23,7 @@ int sepol_cond_iter_create(sepol_handle_t *handle, const sepol_policydb_t *p,
 {
 	if (!iter)
 		return STATUS_ERR;
-	if (!handle || !p) {
+	if (!p) {
 		*iter = NULL;
 		return STATUS_ERR;
 	}
@@ -34,6 +36,9 @@ int sepol_cond_iter_create(sepol_handle_t *handle, const sepol_policydb_t *p,
 	}
 	tmp->cur = NULL;
 	tmp->next = p->p.cond_list;
+	tmp->count = 0;
+	for (const cond_node_t *n = p->p.cond_list; n; n = n->next)
+		tmp->count++;
 	*iter = tmp;
 	return STATUS_SUCCESS;
 }
@@ -41,6 +46,13 @@ int sepol_cond_iter_create(sepol_handle_t *handle, const sepol_policydb_t *p,
 void sepol_cond_iter_destroy(sepol_cond_iter_t *iter)
 {
 	free(iter);
+}
+
+size_t sepol_cond_iter_get_count(const sepol_cond_iter_t *iter)
+{
+	if (!iter)
+		return 0;
+	return iter->count;
 }
 
 int sepol_cond_iter_next(sepol_handle_t *handle __attribute__((unused)),
@@ -64,6 +76,7 @@ int sepol_cond_iter_next(sepol_handle_t *handle __attribute__((unused)),
 
 struct sepol_cond_expr_iter {
 	const cond_expr_t *expr;
+	size_t count;
 };
 
 int sepol_cond_expr_iter_create(sepol_handle_t *handle,
@@ -90,6 +103,9 @@ int sepol_cond_expr_iter_create(sepol_handle_t *handle,
 		return STATUS_ERR;
 	}
 	tmp->expr = cond_iter->cur->expr;
+	tmp->count = 0;
+	for (const cond_expr_t *e = tmp->expr; e; e = e->next)
+		tmp->count++;
 	*iter = tmp;
 	return STATUS_SUCCESS;
 }
@@ -97,6 +113,13 @@ int sepol_cond_expr_iter_create(sepol_handle_t *handle,
 void sepol_cond_expr_iter_destroy(sepol_cond_expr_iter_t *iter)
 {
 	free(iter);
+}
+
+size_t sepol_cond_expr_iter_get_count(const sepol_cond_expr_iter_t *iter)
+{
+	if (!iter)
+		return 0;
+	return iter->count;
 }
 
 int sepol_cond_expr_iter_next(sepol_handle_t *handle __attribute__((unused)),
@@ -125,6 +148,7 @@ struct sepol_cond_rule_iter {
 	const cond_av_list_t *cur;
 	const avtab_datum_t *last_datum;
 	uint16_t last_specified;
+	size_t count;
 };
 
 int sepol_cond_rule_iter_create(sepol_handle_t *handle,
@@ -154,6 +178,11 @@ int sepol_cond_rule_iter_create(sepol_handle_t *handle,
 				  cond_iter->cur->false_list;
 	tmp->last_datum = NULL;
 	tmp->last_specified = 0;
+	tmp->count = 0;
+	for (const cond_av_list_t *c = tmp->cur; c; c = c->next) {
+		if (c->node)
+			tmp->count++;
+	}
 	*iter = tmp;
 	return STATUS_SUCCESS;
 }
@@ -161,6 +190,13 @@ int sepol_cond_rule_iter_create(sepol_handle_t *handle,
 void sepol_cond_rule_iter_destroy(sepol_cond_rule_iter_t *iter)
 {
 	free(iter);
+}
+
+size_t sepol_cond_rule_iter_get_count(const sepol_cond_rule_iter_t *iter)
+{
+	if (!iter)
+		return 0;
+	return iter->count;
 }
 
 int sepol_cond_rule_iter_next(sepol_handle_t *handle __attribute__((unused)),

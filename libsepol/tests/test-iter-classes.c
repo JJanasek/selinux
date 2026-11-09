@@ -200,15 +200,21 @@ void test_iter_classes_non_empty(void)
 	sepol_class_iter_t *class_iter;
 	CU_ASSERT_EQUAL_FATAL(
 		sepol_class_iter_create(handle, iter_policy, &class_iter), 0);
+	CU_ASSERT_EQUAL(sepol_class_iter_get_count(NULL), 0);
+	size_t expected = sepol_class_iter_get_count(class_iter);
+	CU_ASSERT(expected > 0);
 
+	size_t walked = 0;
 	while (1) {
 		CU_ASSERT_EQUAL(
 			sepol_class_iter_next(handle, class_iter, &item), 0);
 		if (!item)
 			break;
+		walked++;
 		seen(item);
 		sepol_class_free(item);
 	}
+	CU_ASSERT_EQUAL(walked, expected);
 	CU_ASSERT_EQUAL(sepol_class_iter_next(handle, class_iter, &item), 0);
 	CU_ASSERT_PTR_NULL(item);
 

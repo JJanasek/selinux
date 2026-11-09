@@ -4,6 +4,7 @@
 #include <sepol/handle.h>
 #include <sepol/policydb.h>
 #include <stdint.h>
+#include <stddef.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -23,6 +24,9 @@ extern int sepol_common_iter_create(sepol_handle_t *handle,
 
 extern void sepol_common_iter_destroy(sepol_common_iter_t *iter);
 
+/* O(1) snapshot taken at *_create(); not refreshed if the policydb mutates. NULL iter returns 0. */
+extern size_t sepol_common_iter_get_count(const sepol_common_iter_t *iter);
+
 extern int sepol_common_iter_next(sepol_handle_t *handle,
 				  sepol_common_iter_t *iter, const char **name,
 				  uint32_t *value);
@@ -36,9 +40,18 @@ extern int sepol_common_perm_iter_create(sepol_handle_t *handle,
 
 extern void sepol_common_perm_iter_destroy(sepol_common_perm_iter_t *iter);
 
+/* O(1) snapshot taken at *_create(); not refreshed if the policydb mutates. NULL iter returns 0. */
+extern size_t sepol_common_perm_iter_get_count(const sepol_common_perm_iter_t *iter);
+
+/*
+ * Advance to the next common permission. When done, sets *perm_name to
+ * NULL and *value to 0. *value is the 1-based permission value
+ * (perm_datum->s.value).
+ */
 extern int sepol_common_perm_iter_next(sepol_handle_t *handle,
 				       sepol_common_perm_iter_t *iter,
-				       const char **perm_name);
+				       const char **perm_name,
+				       uint32_t *value);
 
 /* Resolve a common permission set value to its name.
  * Returns non-zero on invalid value.

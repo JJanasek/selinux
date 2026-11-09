@@ -2,6 +2,7 @@
 
 #include <sepol/policydb/hashtab.h>
 #include <sepol/policydb/policydb.h>
+#include <stddef.h>
 #include <stdlib.h>
 
 #include "debug.h"
@@ -9,6 +10,7 @@
 
 struct sepol_common_iter {
 	hashtab_iter_t ht_iter;
+	size_t count;
 };
 
 int sepol_common_iter_create(sepol_handle_t *handle, const sepol_policydb_t *p,
@@ -16,7 +18,7 @@ int sepol_common_iter_create(sepol_handle_t *handle, const sepol_policydb_t *p,
 {
 	if (!iter)
 		return STATUS_ERR;
-	if (!handle || !p) {
+	if (!p) {
 		*iter = NULL;
 		return STATUS_ERR;
 	}
@@ -30,6 +32,7 @@ int sepol_common_iter_create(sepol_handle_t *handle, const sepol_policydb_t *p,
 
 	hashtab_iter_init(p->p.p_commons.table, &tmp->ht_iter);
 
+	tmp->count = p->p.p_commons.table ? p->p.p_commons.table->nel : 0;
 	*iter = tmp;
 	return STATUS_SUCCESS;
 }
@@ -37,6 +40,13 @@ int sepol_common_iter_create(sepol_handle_t *handle, const sepol_policydb_t *p,
 void sepol_common_iter_destroy(sepol_common_iter_t *iter)
 {
 	free(iter);
+}
+
+size_t sepol_common_iter_get_count(const sepol_common_iter_t *iter)
+{
+	if (!iter)
+		return 0;
+	return iter->count;
 }
 
 int sepol_common_iter_next(sepol_handle_t *handle __attribute__((unused)),
@@ -66,6 +76,7 @@ int sepol_common_iter_next(sepol_handle_t *handle __attribute__((unused)),
 
 struct sepol_common_perm_iter {
 	hashtab_iter_t ht_iter;
+	size_t count;
 };
 
 int sepol_common_perm_iter_create(sepol_handle_t *handle,
@@ -75,7 +86,7 @@ int sepol_common_perm_iter_create(sepol_handle_t *handle,
 {
 	if (!iter)
 		return STATUS_ERR;
-	if (!handle || !p) {
+	if (!p) {
 		*iter = NULL;
 		return STATUS_ERR;
 	}
@@ -109,6 +120,7 @@ int sepol_common_perm_iter_create(sepol_handle_t *handle,
 
 	hashtab_iter_init(d->permissions.table, &tmp->ht_iter);
 
+	tmp->count = d->permissions.table ? d->permissions.table->nel : 0;
 	*iter = tmp;
 	return STATUS_SUCCESS;
 }
@@ -118,11 +130,18 @@ void sepol_common_perm_iter_destroy(sepol_common_perm_iter_t *iter)
 	free(iter);
 }
 
+size_t sepol_common_perm_iter_get_count(const sepol_common_perm_iter_t *iter)
+{
+	if (!iter)
+		return 0;
+	return iter->count;
+}
+
 int sepol_common_perm_iter_next(sepol_handle_t *handle __attribute__((unused)),
 				sepol_common_perm_iter_t *iter,
-				const char **perm_name)
+				const char **perm_name, uint32_t *value)
 {
-	if (!iter || !perm_name)
+	if (!iter || !perm_name || !value)
 		return STATUS_ERR;
 
 	hashtab_key_t hkey;
@@ -131,10 +150,14 @@ int sepol_common_perm_iter_next(sepol_handle_t *handle __attribute__((unused)),
 	hashtab_iter_next(&iter->ht_iter, &hkey, &hdatum);
 	if (!hkey) {
 		*perm_name = NULL;
+		*value = 0;
 		return STATUS_SUCCESS;
 	}
 
+	perm_datum_t *d = (perm_datum_t *)hdatum;
+
 	*perm_name = hkey;
+	*value = d->s.value;
 
 	return STATUS_SUCCESS;
 }

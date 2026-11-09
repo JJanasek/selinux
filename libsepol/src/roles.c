@@ -1,5 +1,7 @@
 #include <sepol/roles.h>
 
+#include <stddef.h>
+
 #include <sepol/policydb/expand.h>
 #include <sepol/policydb/policydb.h>
 
@@ -9,6 +11,7 @@
 struct sepol_role_iter {
 	const policydb_t *policydb;
 	uint32_t idx;
+	size_t count;
 };
 
 static int role_datum_to_record(sepol_handle_t *handle,
@@ -200,7 +203,7 @@ int sepol_role_iter_create(sepol_handle_t *handle, const sepol_policydb_t *p,
 {
 	if (!iter)
 		return STATUS_ERR;
-	if (!handle || !p) {
+	if (!p) {
 		ERR(handle, "invalid argument to sepol_role_iter_create");
 		*iter = NULL;
 		return STATUS_ERR;
@@ -213,6 +216,11 @@ int sepol_role_iter_create(sepol_handle_t *handle, const sepol_policydb_t *p,
 	}
 	tmp->policydb = &p->p;
 	tmp->idx = 0;
+	tmp->count = 0;
+	for (uint32_t i = 0; i < tmp->policydb->p_roles.nprim; i++) {
+		if (tmp->policydb->role_val_to_struct[i])
+			tmp->count++;
+	}
 
 	*iter = tmp;
 	return STATUS_SUCCESS;
@@ -221,6 +229,13 @@ int sepol_role_iter_create(sepol_handle_t *handle, const sepol_policydb_t *p,
 void sepol_role_iter_destroy(sepol_role_iter_t *iter)
 {
 	free(iter);
+}
+
+size_t sepol_role_iter_get_count(const sepol_role_iter_t *iter)
+{
+	if (!iter)
+		return 0;
+	return iter->count;
 }
 
 int sepol_role_iter_next(sepol_handle_t *handle, sepol_role_iter_t *iter,

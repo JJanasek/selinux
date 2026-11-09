@@ -233,8 +233,14 @@ extern int sepol_node_sid(uint16_t domain, void *addr, size_t addrlen,
  * Return a value indicating how to handle labeling for the
  * the specified filesystem type, and optionally return a SID
  * for the filesystem object.  
- * (SECURITY_FS_USE_* constants are in <sepol/constants.h>.)
  */
+#ifndef SECURITY_FS_USE_XATTR
+#define SECURITY_FS_USE_XATTR SEPOL_SECURITY_FS_USE_XATTR
+#define SECURITY_FS_USE_TRANS SEPOL_SECURITY_FS_USE_TRANS
+#define SECURITY_FS_USE_TASK SEPOL_SECURITY_FS_USE_TASK
+#define SECURITY_FS_USE_GENFS SEPOL_SECURITY_FS_USE_GENFS
+#define SECURITY_FS_USE_NONE SEPOL_SECURITY_FS_USE_NONE
+#endif
 extern int sepol_fs_use(const char *fstype, /* IN */
 			unsigned int *behavior, /* OUT */
 			sepol_security_id_t *sid); /* OUT  */

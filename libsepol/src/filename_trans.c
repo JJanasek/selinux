@@ -3,6 +3,7 @@
 #include <sepol/policydb/ebitmap.h>
 #include <sepol/policydb/hashtab.h>
 #include <sepol/policydb/policydb.h>
+#include <stddef.h>
 #include <stdlib.h>
 
 #include "debug.h"
@@ -14,7 +15,36 @@ struct sepol_filename_trans_iter {
 	ebitmap_node_t *stype_node;
 	uint32_t stype_bit;
 	uint32_t stype_highbit;
+	size_t count;
 };
+
+
+static size_t filename_trans_count(hashtab_t table)
+{
+	size_t n = 0;
+	hashtab_iter_t ht;
+	hashtab_key_t hkey;
+	hashtab_datum_t hdatum;
+
+	if (!table)
+		return 0;
+
+	hashtab_iter_init(table, &ht);
+	for (;;) {
+		hashtab_iter_next(&ht, &hkey, &hdatum);
+		if (!hkey)
+			break;
+		for (const filename_trans_datum_t *d =
+			     (const filename_trans_datum_t *)hdatum;
+		     d; d = d->next) {
+			ebitmap_node_t *node;
+			uint32_t bit;
+			ebitmap_for_each_positive_bit(&d->stypes, node, bit)
+				n++;
+		}
+	}
+	return n;
+}
 
 static void init_ebitmap_walk(sepol_filename_trans_iter_t *iter,
 			      const ebitmap_t *e)
@@ -59,7 +89,7 @@ int sepol_filename_trans_iter_create(sepol_handle_t *handle,
 {
 	if (!iter)
 		return STATUS_ERR;
-	if (!handle || !p) {
+	if (!p) {
 		*iter = NULL;
 		return STATUS_ERR;
 	}
@@ -78,6 +108,8 @@ int sepol_filename_trans_iter_create(sepol_handle_t *handle,
 	tmp->stype_bit = 0;
 	tmp->stype_highbit = 0;
 
+	tmp->count = filename_trans_count(p->p.filename_trans);
+
 	advance(tmp);
 
 	*iter = tmp;
@@ -89,16 +121,23 @@ void sepol_filename_trans_iter_destroy(sepol_filename_trans_iter_t *iter)
 	free(iter);
 }
 
+size_t sepol_filename_trans_iter_get_count(const sepol_filename_trans_iter_t *iter)
+{
+	if (!iter)
+		return 0;
+	return iter->count;
+}
+
 int sepol_filename_trans_iter_next(sepol_handle_t *handle
 				   __attribute__((unused)),
 				   sepol_filename_trans_iter_t *iter,
 				   uint32_t *source_type, uint32_t *target_type,
 				   uint32_t *target_class,
 				   const char **filename,
-				   uint32_t *default_type)
+				   uint32_t *default_type, int *has_next)
 {
 	if (!iter || !source_type || !target_type || !target_class ||
-	    !filename || !default_type)
+	    !filename || !default_type || !has_next)
 		return STATUS_ERR;
 
 	if (!iter->cur_key) {
@@ -107,6 +146,7 @@ int sepol_filename_trans_iter_next(sepol_handle_t *handle
 		*target_class = 0;
 		*filename = NULL;
 		*default_type = 0;
+		*has_next = 0;
 		return STATUS_SUCCESS;
 	}
 
@@ -115,6 +155,7 @@ int sepol_filename_trans_iter_next(sepol_handle_t *handle
 	*target_class = iter->cur_key->tclass;
 	*filename = iter->cur_key->name;
 	*default_type = iter->cur_datum->otype;
+	*has_next = 1;
 
 	iter->stype_bit = ebitmap_next(&iter->stype_node, iter->stype_bit);
 	advance(iter);

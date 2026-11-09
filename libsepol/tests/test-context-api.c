@@ -169,7 +169,7 @@ static void test_sid_to_context_record(void)
 	sepol_sidtab_destroy(&sidtab);
 }
 
-static void test_sid_table_opaque(void)
+static void test_sid_table_activate(void)
 {
 	sepol_sid_table_t *st = sepol_sid_table_new();
 	sepol_sid_table_t *st2;
@@ -178,12 +178,12 @@ static void test_sid_table_opaque(void)
 	CU_ASSERT_EQUAL(sepol_sid_table_load_isids(st, policy), 0);
 
 	sepol_set_policydb(&policy->p);
-	CU_ASSERT_EQUAL(sepol_sid_table_set_opaque(st), 0);
+	CU_ASSERT_EQUAL(sepol_sid_table_activate(st), 0);
 
 	st2 = sepol_sid_table_new();
 	CU_ASSERT_PTR_NOT_NULL_FATAL(st2);
 	CU_ASSERT_EQUAL(sepol_sid_table_load_isids(st2, policy), 0);
-	CU_ASSERT_EQUAL(sepol_sid_table_set_opaque(st2), 0);
+	CU_ASSERT_EQUAL(sepol_sid_table_activate(st2), 0);
 
 	sepol_sid_table_free(st);
 
@@ -279,7 +279,7 @@ int context_api_add_tests(CU_pSuite suite)
 	if (CU_add_test(suite, "sid_to_context_record",
 			test_sid_to_context_record) == NULL)
 		return CU_get_error();
-	if (CU_add_test(suite, "sid_table_opaque", test_sid_table_opaque) ==
+	if (CU_add_test(suite, "sid_table_activate", test_sid_table_activate) ==
 	    NULL)
 		return CU_get_error();
 	if (CU_add_test(suite, "policydb_sid_to_context_without_globals",

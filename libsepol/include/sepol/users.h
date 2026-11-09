@@ -64,11 +64,18 @@ extern int sepol_user_iterate(sepol_handle_t *handle,
  * assignment, which typically -- but is not guaranteed to -- match
  * declaration order; callers should not treat it as a stable guarantee
  * across policydb versions.
+ *
+ * Ownership: each successful sepol_user_iter_next() that produces an
+ * item heap-allocates a fresh caller-owned sepol_user_t (free with
+ * sepol_user_free()). Exhaustion: returns 0 with *item == NULL.
  */
 extern int sepol_user_iter_create(sepol_handle_t *handle,
 				  const sepol_policydb_t *p,
 				  sepol_user_iter_t **iter);
 extern void sepol_user_iter_destroy(sepol_user_iter_t *iter);
+
+/* O(1) snapshot taken at *_create(); not refreshed if the policydb mutates. NULL iter returns 0. */
+extern size_t sepol_user_iter_get_count(const sepol_user_iter_t *iter);
 extern int sepol_user_iter_next(sepol_handle_t *handle, sepol_user_iter_t *iter,
 				sepol_user_t **item);
 

@@ -21,7 +21,6 @@
 #include "private.h"
 
 extern int sepol_set_sidtab(sidtab_t *s);
-extern sidtab_t *sepol_get_sidtab(void);
 
 struct sepol_sid_table {
 	sidtab_t tab;
@@ -319,7 +318,7 @@ void sepol_sid_table_free(sepol_sid_table_t *tab)
 	/*
 	 * Compare against the actual, currently-installed sidtab rather
 	 * than tracking "did we last install this via
-	 * sepol_sid_table_set_opaque()" in a separate variable: the latter
+	 * sepol_sid_table_activate()" in a separate variable: the latter
 	 * can desynchronize from reality if sepol_set_sidtab() is later
 	 * called directly (it is a separate public API), which would
 	 * otherwise cause this function to incorrectly clear an unrelated,
@@ -359,7 +358,7 @@ int sepol_sid_table_load_isids(sepol_sid_table_t *tab,
 	return 0;
 }
 
-int sepol_sid_table_set_opaque(sepol_sid_table_t *tab)
+int sepol_sid_table_activate(sepol_sid_table_t *tab)
 {
 	if (!tab)
 		return STATUS_ERR;

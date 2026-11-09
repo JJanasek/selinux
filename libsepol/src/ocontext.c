@@ -2,6 +2,7 @@
 
 #include <sepol/policydb/context.h>
 #include <sepol/policydb/policydb.h>
+#include <stddef.h>
 #include <stdlib.h>
 
 #include "cat_set_internal.h"
@@ -85,12 +86,34 @@
 			cat_iter);                                          \
 	}
 
+
+static size_t ocon_list_count(const ocontext_t *c)
+{
+	size_t n = 0;
+	while (c) {
+		n++;
+		c = c->next;
+	}
+	return n;
+}
+
+static size_t genfscon_list_count(const genfs_t *g)
+{
+	size_t n = 0;
+	for (; g; g = g->next) {
+		for (const ocontext_t *c = g->head; c; c = c->next)
+			n++;
+	}
+	return n;
+}
+
 /* ---- Initial SID iterator ---- */
 
 struct sepol_isid_iter {
 	const ocontext_t *cur;
 	const ocontext_t *last;
 	int target_platform;
+	size_t count;
 };
 
 int sepol_isid_iter_create(sepol_handle_t *handle, const sepol_policydb_t *p,
@@ -98,7 +121,7 @@ int sepol_isid_iter_create(sepol_handle_t *handle, const sepol_policydb_t *p,
 {
 	if (!iter)
 		return STATUS_ERR;
-	if (!handle || !p) {
+	if (!p) {
 		*iter = NULL;
 		return STATUS_ERR;
 	}
@@ -114,6 +137,7 @@ int sepol_isid_iter_create(sepol_handle_t *handle, const sepol_policydb_t *p,
 	tmp->last = NULL;
 	tmp->target_platform = p->p.target_platform;
 
+	tmp->count = ocon_list_count(tmp->cur);
 	*iter = tmp;
 	return STATUS_SUCCESS;
 }
@@ -121,6 +145,13 @@ int sepol_isid_iter_create(sepol_handle_t *handle, const sepol_policydb_t *p,
 void sepol_isid_iter_destroy(sepol_isid_iter_t *iter)
 {
 	free(iter);
+}
+
+size_t sepol_isid_iter_get_count(const sepol_isid_iter_t *iter)
+{
+	if (!iter)
+		return 0;
+	return iter->count;
 }
 
 int sepol_isid_iter_next(sepol_handle_t *handle __attribute__((unused)),
@@ -169,6 +200,7 @@ const char *sepol_isid_iter_get_name(const sepol_isid_iter_t *iter)
 struct sepol_fsuse_iter {
 	const ocontext_t *cur;
 	const ocontext_t *last;
+	size_t count;
 };
 
 int sepol_fsuse_iter_create(sepol_handle_t *handle, const sepol_policydb_t *p,
@@ -176,7 +208,7 @@ int sepol_fsuse_iter_create(sepol_handle_t *handle, const sepol_policydb_t *p,
 {
 	if (!iter)
 		return STATUS_ERR;
-	if (!handle || !p) {
+	if (!p) {
 		*iter = NULL;
 		return STATUS_ERR;
 	}
@@ -197,6 +229,7 @@ int sepol_fsuse_iter_create(sepol_handle_t *handle, const sepol_policydb_t *p,
 	tmp->cur = p->p.ocontexts[OCON_FSUSE];
 	tmp->last = NULL;
 
+	tmp->count = ocon_list_count(tmp->cur);
 	*iter = tmp;
 	return STATUS_SUCCESS;
 }
@@ -204,6 +237,13 @@ int sepol_fsuse_iter_create(sepol_handle_t *handle, const sepol_policydb_t *p,
 void sepol_fsuse_iter_destroy(sepol_fsuse_iter_t *iter)
 {
 	free(iter);
+}
+
+size_t sepol_fsuse_iter_get_count(const sepol_fsuse_iter_t *iter)
+{
+	if (!iter)
+		return 0;
+	return iter->count;
 }
 
 int sepol_fsuse_iter_next(sepol_handle_t *handle __attribute__((unused)),
@@ -236,6 +276,7 @@ struct sepol_genfscon_iter {
 	const genfs_t *cur_genfs;
 	const ocontext_t *cur_ocon;
 	const ocontext_t *last;
+	size_t count;
 };
 
 int sepol_genfscon_iter_create(sepol_handle_t *handle,
@@ -244,7 +285,7 @@ int sepol_genfscon_iter_create(sepol_handle_t *handle,
 {
 	if (!iter)
 		return STATUS_ERR;
-	if (!handle || !p) {
+	if (!p) {
 		*iter = NULL;
 		return STATUS_ERR;
 	}
@@ -262,6 +303,7 @@ int sepol_genfscon_iter_create(sepol_handle_t *handle,
 	tmp->cur_ocon = tmp->cur_genfs ? tmp->cur_genfs->head : NULL;
 	tmp->last = NULL;
 
+	tmp->count = genfscon_list_count(p->p.genfs);
 	*iter = tmp;
 	return STATUS_SUCCESS;
 }
@@ -269,6 +311,13 @@ int sepol_genfscon_iter_create(sepol_handle_t *handle,
 void sepol_genfscon_iter_destroy(sepol_genfscon_iter_t *iter)
 {
 	free(iter);
+}
+
+size_t sepol_genfscon_iter_get_count(const sepol_genfscon_iter_t *iter)
+{
+	if (!iter)
+		return 0;
+	return iter->count;
 }
 
 int sepol_genfscon_iter_next(sepol_handle_t *handle __attribute__((unused)),
@@ -310,6 +359,7 @@ DEFINE_OCON_CONTEXT_GETTERS(sepol_genfscon_iter_get, sepol_genfscon_iter_t, 0)
 struct sepol_pirqcon_iter {
 	const ocontext_t *cur;
 	const ocontext_t *last;
+	size_t count;
 };
 
 int sepol_pirqcon_iter_create(sepol_handle_t *handle, const sepol_policydb_t *p,
@@ -317,7 +367,7 @@ int sepol_pirqcon_iter_create(sepol_handle_t *handle, const sepol_policydb_t *p,
 {
 	if (!iter)
 		return STATUS_ERR;
-	if (!handle || !p) {
+	if (!p) {
 		*iter = NULL;
 		return STATUS_ERR;
 	}
@@ -338,6 +388,7 @@ int sepol_pirqcon_iter_create(sepol_handle_t *handle, const sepol_policydb_t *p,
 	tmp->cur = p->p.ocontexts[OCON_XEN_PIRQ];
 	tmp->last = NULL;
 
+	tmp->count = ocon_list_count(tmp->cur);
 	*iter = tmp;
 	return STATUS_SUCCESS;
 }
@@ -345,6 +396,13 @@ int sepol_pirqcon_iter_create(sepol_handle_t *handle, const sepol_policydb_t *p,
 void sepol_pirqcon_iter_destroy(sepol_pirqcon_iter_t *iter)
 {
 	free(iter);
+}
+
+size_t sepol_pirqcon_iter_get_count(const sepol_pirqcon_iter_t *iter)
+{
+	if (!iter)
+		return 0;
+	return iter->count;
 }
 
 int sepol_pirqcon_iter_next(sepol_handle_t *handle __attribute__((unused)),
@@ -376,6 +434,7 @@ DEFINE_OCON_CONTEXT_GETTERS(sepol_pirqcon_iter_get, sepol_pirqcon_iter_t, 0)
 struct sepol_iomemcon_iter {
 	const ocontext_t *cur;
 	const ocontext_t *last;
+	size_t count;
 };
 
 int sepol_iomemcon_iter_create(sepol_handle_t *handle,
@@ -384,7 +443,7 @@ int sepol_iomemcon_iter_create(sepol_handle_t *handle,
 {
 	if (!iter)
 		return STATUS_ERR;
-	if (!handle || !p) {
+	if (!p) {
 		*iter = NULL;
 		return STATUS_ERR;
 	}
@@ -405,6 +464,7 @@ int sepol_iomemcon_iter_create(sepol_handle_t *handle,
 	tmp->cur = p->p.ocontexts[OCON_XEN_IOMEM];
 	tmp->last = NULL;
 
+	tmp->count = ocon_list_count(tmp->cur);
 	*iter = tmp;
 	return STATUS_SUCCESS;
 }
@@ -412,6 +472,13 @@ int sepol_iomemcon_iter_create(sepol_handle_t *handle,
 void sepol_iomemcon_iter_destroy(sepol_iomemcon_iter_t *iter)
 {
 	free(iter);
+}
+
+size_t sepol_iomemcon_iter_get_count(const sepol_iomemcon_iter_t *iter)
+{
+	if (!iter)
+		return 0;
+	return iter->count;
 }
 
 int sepol_iomemcon_iter_next(sepol_handle_t *handle __attribute__((unused)),
@@ -445,6 +512,7 @@ DEFINE_OCON_CONTEXT_GETTERS(sepol_iomemcon_iter_get, sepol_iomemcon_iter_t, 0)
 struct sepol_ioportcon_iter {
 	const ocontext_t *cur;
 	const ocontext_t *last;
+	size_t count;
 };
 
 int sepol_ioportcon_iter_create(sepol_handle_t *handle,
@@ -453,7 +521,7 @@ int sepol_ioportcon_iter_create(sepol_handle_t *handle,
 {
 	if (!iter)
 		return STATUS_ERR;
-	if (!handle || !p) {
+	if (!p) {
 		*iter = NULL;
 		return STATUS_ERR;
 	}
@@ -474,6 +542,7 @@ int sepol_ioportcon_iter_create(sepol_handle_t *handle,
 	tmp->cur = p->p.ocontexts[OCON_XEN_IOPORT];
 	tmp->last = NULL;
 
+	tmp->count = ocon_list_count(tmp->cur);
 	*iter = tmp;
 	return STATUS_SUCCESS;
 }
@@ -481,6 +550,13 @@ int sepol_ioportcon_iter_create(sepol_handle_t *handle,
 void sepol_ioportcon_iter_destroy(sepol_ioportcon_iter_t *iter)
 {
 	free(iter);
+}
+
+size_t sepol_ioportcon_iter_get_count(const sepol_ioportcon_iter_t *iter)
+{
+	if (!iter)
+		return 0;
+	return iter->count;
 }
 
 int sepol_ioportcon_iter_next(sepol_handle_t *handle __attribute__((unused)),
@@ -515,6 +591,7 @@ DEFINE_OCON_CONTEXT_GETTERS(sepol_ioportcon_iter_get, sepol_ioportcon_iter_t, 0)
 struct sepol_pcidevicecon_iter {
 	const ocontext_t *cur;
 	const ocontext_t *last;
+	size_t count;
 };
 
 int sepol_pcidevicecon_iter_create(sepol_handle_t *handle,
@@ -523,7 +600,7 @@ int sepol_pcidevicecon_iter_create(sepol_handle_t *handle,
 {
 	if (!iter)
 		return STATUS_ERR;
-	if (!handle || !p) {
+	if (!p) {
 		*iter = NULL;
 		return STATUS_ERR;
 	}
@@ -544,6 +621,7 @@ int sepol_pcidevicecon_iter_create(sepol_handle_t *handle,
 	tmp->cur = p->p.ocontexts[OCON_XEN_PCIDEVICE];
 	tmp->last = NULL;
 
+	tmp->count = ocon_list_count(tmp->cur);
 	*iter = tmp;
 	return STATUS_SUCCESS;
 }
@@ -551,6 +629,13 @@ int sepol_pcidevicecon_iter_create(sepol_handle_t *handle,
 void sepol_pcidevicecon_iter_destroy(sepol_pcidevicecon_iter_t *iter)
 {
 	free(iter);
+}
+
+size_t sepol_pcidevicecon_iter_get_count(const sepol_pcidevicecon_iter_t *iter)
+{
+	if (!iter)
+		return 0;
+	return iter->count;
 }
 
 int sepol_pcidevicecon_iter_next(sepol_handle_t *handle __attribute__((unused)),
@@ -583,6 +668,7 @@ DEFINE_OCON_CONTEXT_GETTERS(sepol_pcidevicecon_iter_get,
 struct sepol_devicetreecon_iter {
 	const ocontext_t *cur;
 	const ocontext_t *last;
+	size_t count;
 };
 
 int sepol_devicetreecon_iter_create(sepol_handle_t *handle,
@@ -591,7 +677,7 @@ int sepol_devicetreecon_iter_create(sepol_handle_t *handle,
 {
 	if (!iter)
 		return STATUS_ERR;
-	if (!handle || !p) {
+	if (!p) {
 		*iter = NULL;
 		return STATUS_ERR;
 	}
@@ -612,6 +698,7 @@ int sepol_devicetreecon_iter_create(sepol_handle_t *handle,
 	tmp->cur = p->p.ocontexts[OCON_XEN_DEVICETREE];
 	tmp->last = NULL;
 
+	tmp->count = ocon_list_count(tmp->cur);
 	*iter = tmp;
 	return STATUS_SUCCESS;
 }
@@ -619,6 +706,13 @@ int sepol_devicetreecon_iter_create(sepol_handle_t *handle,
 void sepol_devicetreecon_iter_destroy(sepol_devicetreecon_iter_t *iter)
 {
 	free(iter);
+}
+
+size_t sepol_devicetreecon_iter_get_count(const sepol_devicetreecon_iter_t *iter)
+{
+	if (!iter)
+		return 0;
+	return iter->count;
 }
 
 int sepol_devicetreecon_iter_next(sepol_handle_t *handle
@@ -650,6 +744,7 @@ DEFINE_OCON_CONTEXT_GETTERS(sepol_devicetreecon_iter_get,
 struct sepol_portcon_iter {
 	const ocontext_t *cur;
 	const ocontext_t *last;
+	size_t count;
 };
 
 int sepol_portcon_iter_create(sepol_handle_t *handle, const sepol_policydb_t *p,
@@ -657,7 +752,7 @@ int sepol_portcon_iter_create(sepol_handle_t *handle, const sepol_policydb_t *p,
 {
 	if (!iter)
 		return STATUS_ERR;
-	if (!handle || !p) {
+	if (!p) {
 		*iter = NULL;
 		return STATUS_ERR;
 	}
@@ -678,6 +773,7 @@ int sepol_portcon_iter_create(sepol_handle_t *handle, const sepol_policydb_t *p,
 	tmp->cur = p->p.ocontexts[OCON_PORT];
 	tmp->last = NULL;
 
+	tmp->count = ocon_list_count(tmp->cur);
 	*iter = tmp;
 	return STATUS_SUCCESS;
 }
@@ -685,6 +781,13 @@ int sepol_portcon_iter_create(sepol_handle_t *handle, const sepol_policydb_t *p,
 void sepol_portcon_iter_destroy(sepol_portcon_iter_t *iter)
 {
 	free(iter);
+}
+
+size_t sepol_portcon_iter_get_count(const sepol_portcon_iter_t *iter)
+{
+	if (!iter)
+		return 0;
+	return iter->count;
 }
 
 int sepol_portcon_iter_next(sepol_handle_t *handle __attribute__((unused)),
@@ -721,6 +824,7 @@ DEFINE_OCON_CONTEXT_GETTERS(sepol_portcon_iter_get, sepol_portcon_iter_t, 0)
 struct sepol_netifcon_iter {
 	const ocontext_t *cur;
 	const ocontext_t *last;
+	size_t count;
 };
 
 int sepol_netifcon_iter_create(sepol_handle_t *handle,
@@ -729,7 +833,7 @@ int sepol_netifcon_iter_create(sepol_handle_t *handle,
 {
 	if (!iter)
 		return STATUS_ERR;
-	if (!handle || !p) {
+	if (!p) {
 		*iter = NULL;
 		return STATUS_ERR;
 	}
@@ -750,6 +854,7 @@ int sepol_netifcon_iter_create(sepol_handle_t *handle,
 	tmp->cur = p->p.ocontexts[OCON_NETIF];
 	tmp->last = NULL;
 
+	tmp->count = ocon_list_count(tmp->cur);
 	*iter = tmp;
 	return STATUS_SUCCESS;
 }
@@ -757,6 +862,13 @@ int sepol_netifcon_iter_create(sepol_handle_t *handle,
 void sepol_netifcon_iter_destroy(sepol_netifcon_iter_t *iter)
 {
 	free(iter);
+}
+
+size_t sepol_netifcon_iter_get_count(const sepol_netifcon_iter_t *iter)
+{
+	if (!iter)
+		return 0;
+	return iter->count;
 }
 
 int sepol_netifcon_iter_next(sepol_handle_t *handle __attribute__((unused)),
@@ -787,6 +899,7 @@ DEFINE_OCON_CONTEXT_GETTERS(sepol_netifcon_iter_get_msg, sepol_netifcon_iter_t,
 struct sepol_nodecon_iter {
 	const ocontext_t *cur;
 	const ocontext_t *last;
+	size_t count;
 };
 
 int sepol_nodecon_iter_create(sepol_handle_t *handle, const sepol_policydb_t *p,
@@ -794,7 +907,7 @@ int sepol_nodecon_iter_create(sepol_handle_t *handle, const sepol_policydb_t *p,
 {
 	if (!iter)
 		return STATUS_ERR;
-	if (!handle || !p) {
+	if (!p) {
 		*iter = NULL;
 		return STATUS_ERR;
 	}
@@ -815,6 +928,7 @@ int sepol_nodecon_iter_create(sepol_handle_t *handle, const sepol_policydb_t *p,
 	tmp->cur = p->p.ocontexts[OCON_NODE];
 	tmp->last = NULL;
 
+	tmp->count = ocon_list_count(tmp->cur);
 	*iter = tmp;
 	return STATUS_SUCCESS;
 }
@@ -822,6 +936,13 @@ int sepol_nodecon_iter_create(sepol_handle_t *handle, const sepol_policydb_t *p,
 void sepol_nodecon_iter_destroy(sepol_nodecon_iter_t *iter)
 {
 	free(iter);
+}
+
+size_t sepol_nodecon_iter_get_count(const sepol_nodecon_iter_t *iter)
+{
+	if (!iter)
+		return 0;
+	return iter->count;
 }
 
 int sepol_nodecon_iter_next(sepol_handle_t *handle __attribute__((unused)),
@@ -855,6 +976,7 @@ DEFINE_OCON_CONTEXT_GETTERS(sepol_nodecon_iter_get, sepol_nodecon_iter_t, 0)
 struct sepol_nodecon6_iter {
 	const ocontext_t *cur;
 	const ocontext_t *last;
+	size_t count;
 };
 
 int sepol_nodecon6_iter_create(sepol_handle_t *handle,
@@ -863,7 +985,7 @@ int sepol_nodecon6_iter_create(sepol_handle_t *handle,
 {
 	if (!iter)
 		return STATUS_ERR;
-	if (!handle || !p) {
+	if (!p) {
 		*iter = NULL;
 		return STATUS_ERR;
 	}
@@ -884,6 +1006,7 @@ int sepol_nodecon6_iter_create(sepol_handle_t *handle,
 	tmp->cur = p->p.ocontexts[OCON_NODE6];
 	tmp->last = NULL;
 
+	tmp->count = ocon_list_count(tmp->cur);
 	*iter = tmp;
 	return STATUS_SUCCESS;
 }
@@ -891,6 +1014,13 @@ int sepol_nodecon6_iter_create(sepol_handle_t *handle,
 void sepol_nodecon6_iter_destroy(sepol_nodecon6_iter_t *iter)
 {
 	free(iter);
+}
+
+size_t sepol_nodecon6_iter_get_count(const sepol_nodecon6_iter_t *iter)
+{
+	if (!iter)
+		return 0;
+	return iter->count;
 }
 
 int sepol_nodecon6_iter_next(sepol_handle_t *handle __attribute__((unused)),
@@ -922,6 +1052,7 @@ DEFINE_OCON_CONTEXT_GETTERS(sepol_nodecon6_iter_get, sepol_nodecon6_iter_t, 0)
 struct sepol_ibpkeycon_iter {
 	const ocontext_t *cur;
 	const ocontext_t *last;
+	size_t count;
 };
 
 int sepol_ibpkeycon_iter_create(sepol_handle_t *handle,
@@ -930,7 +1061,7 @@ int sepol_ibpkeycon_iter_create(sepol_handle_t *handle,
 {
 	if (!iter)
 		return STATUS_ERR;
-	if (!handle || !p) {
+	if (!p) {
 		*iter = NULL;
 		return STATUS_ERR;
 	}
@@ -951,6 +1082,7 @@ int sepol_ibpkeycon_iter_create(sepol_handle_t *handle,
 	tmp->cur = p->p.ocontexts[OCON_IBPKEY];
 	tmp->last = NULL;
 
+	tmp->count = ocon_list_count(tmp->cur);
 	*iter = tmp;
 	return STATUS_SUCCESS;
 }
@@ -958,6 +1090,13 @@ int sepol_ibpkeycon_iter_create(sepol_handle_t *handle,
 void sepol_ibpkeycon_iter_destroy(sepol_ibpkeycon_iter_t *iter)
 {
 	free(iter);
+}
+
+size_t sepol_ibpkeycon_iter_get_count(const sepol_ibpkeycon_iter_t *iter)
+{
+	if (!iter)
+		return 0;
+	return iter->count;
 }
 
 int sepol_ibpkeycon_iter_next(sepol_handle_t *handle __attribute__((unused)),
@@ -994,6 +1133,7 @@ DEFINE_OCON_CONTEXT_GETTERS(sepol_ibpkeycon_iter_get, sepol_ibpkeycon_iter_t, 0)
 struct sepol_ibendportcon_iter {
 	const ocontext_t *cur;
 	const ocontext_t *last;
+	size_t count;
 };
 
 int sepol_ibendportcon_iter_create(sepol_handle_t *handle,
@@ -1002,7 +1142,7 @@ int sepol_ibendportcon_iter_create(sepol_handle_t *handle,
 {
 	if (!iter)
 		return STATUS_ERR;
-	if (!handle || !p) {
+	if (!p) {
 		*iter = NULL;
 		return STATUS_ERR;
 	}
@@ -1023,6 +1163,7 @@ int sepol_ibendportcon_iter_create(sepol_handle_t *handle,
 	tmp->cur = p->p.ocontexts[OCON_IBENDPORT];
 	tmp->last = NULL;
 
+	tmp->count = ocon_list_count(tmp->cur);
 	*iter = tmp;
 	return STATUS_SUCCESS;
 }
@@ -1030,6 +1171,13 @@ int sepol_ibendportcon_iter_create(sepol_handle_t *handle,
 void sepol_ibendportcon_iter_destroy(sepol_ibendportcon_iter_t *iter)
 {
 	free(iter);
+}
+
+size_t sepol_ibendportcon_iter_get_count(const sepol_ibendportcon_iter_t *iter)
+{
+	if (!iter)
+		return 0;
+	return iter->count;
 }
 
 int sepol_ibendportcon_iter_next(sepol_handle_t *handle __attribute__((unused)),

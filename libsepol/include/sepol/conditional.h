@@ -5,6 +5,7 @@
 #include <sepol/handle.h>
 #include <sepol/policydb.h>
 #include <stdint.h>
+#include <stddef.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -20,6 +21,13 @@ extern "C" {
 
 /* --- Conditional block iterator --- */
 
+/*
+ * Kernel-format only: cond_list is populated for POLICY_KERN policydbs.
+ * On a POLICY_BASE/POLICY_MOD policydb the list is empty -- conditional
+ * rules live on per-decl avrule_block lists instead -- so these
+ * iterators silently yield nothing until the policy is expanded/linked
+ * to kernel form.
+ */
 struct sepol_cond_iter;
 typedef struct sepol_cond_iter sepol_cond_iter_t;
 
@@ -28,6 +36,9 @@ extern int sepol_cond_iter_create(sepol_handle_t *handle,
 				  sepol_cond_iter_t **iter);
 
 extern void sepol_cond_iter_destroy(sepol_cond_iter_t *iter);
+
+/* O(1) snapshot taken at *_create(); not refreshed if the policydb mutates. NULL iter returns 0. */
+extern size_t sepol_cond_iter_get_count(const sepol_cond_iter_t *iter);
 
 /*
  * Advance to the next conditional block.
@@ -46,6 +57,9 @@ extern int sepol_cond_expr_iter_create(sepol_handle_t *handle,
 				       sepol_cond_expr_iter_t **iter);
 
 extern void sepol_cond_expr_iter_destroy(sepol_cond_expr_iter_t *iter);
+
+/* O(1) snapshot taken at *_create(); not refreshed if the policydb mutates. NULL iter returns 0. */
+extern size_t sepol_cond_expr_iter_get_count(const sepol_cond_expr_iter_t *iter);
 
 /*
  * Get the next expression node (reverse polish notation).
@@ -72,6 +86,9 @@ extern int sepol_cond_rule_iter_create(sepol_handle_t *handle,
 				       sepol_cond_rule_iter_t **iter);
 
 extern void sepol_cond_rule_iter_destroy(sepol_cond_rule_iter_t *iter);
+
+/* O(1) snapshot taken at *_create(); not refreshed if the policydb mutates. NULL iter returns 0. */
+extern size_t sepol_cond_rule_iter_get_count(const sepol_cond_rule_iter_t *iter);
 
 /*
  * Get the next conditional rule. Sets *ruletype to 0 when done.

@@ -305,6 +305,7 @@ LIBSEPOL_3.12 {
   global:
 	sepol_avtab_iter_create;
 	sepol_avtab_iter_destroy;
+	sepol_avtab_iter_get_count;
 	sepol_avtab_iter_get_av_data;
 	sepol_avtab_iter_get_type_data;
 	sepol_avtab_iter_get_xperm_driver;
@@ -312,13 +313,16 @@ LIBSEPOL_3.12 {
 	sepol_avtab_iter_next;
 	sepol_bool_iter_create;
 	sepol_bool_iter_destroy;
+	sepol_bool_iter_get_count;
 	sepol_bool_iter_next;
 	sepol_bool_query_by_value;
 	sepol_bool_value_to_name;
 	sepol_cat_iter_create;
 	sepol_cat_iter_destroy;
+	sepol_cat_iter_get_count;
 	sepol_cat_iter_next;
 	sepol_cat_set_iter_destroy;
+	sepol_cat_set_iter_get_count;
 	sepol_cat_set_iter_next;
 	sepol_cat_value_to_name;
 	sepol_class_add_constraint;
@@ -346,6 +350,7 @@ LIBSEPOL_3.12 {
 	sepol_class_has_perm;
 	sepol_class_iter_create;
 	sepol_class_iter_destroy;
+	sepol_class_iter_get_count;
 	sepol_class_iter_next;
 	sepol_class_key_create;
 	sepol_class_key_extract;
@@ -363,19 +368,24 @@ LIBSEPOL_3.12 {
 	sepol_class_value_to_name;
 	sepol_common_iter_create;
 	sepol_common_iter_destroy;
+	sepol_common_iter_get_count;
 	sepol_common_iter_next;
 	sepol_common_perm_iter_create;
 	sepol_common_perm_iter_destroy;
+	sepol_common_perm_iter_get_count;
 	sepol_common_perm_iter_next;
 	sepol_common_value_to_name;
 	sepol_cond_expr_iter_create;
 	sepol_cond_expr_iter_destroy;
+	sepol_cond_expr_iter_get_count;
 	sepol_cond_expr_iter_next;
 	sepol_cond_iter_create;
 	sepol_cond_iter_destroy;
+	sepol_cond_iter_get_count;
 	sepol_cond_iter_next;
 	sepol_cond_rule_iter_create;
 	sepol_cond_rule_iter_destroy;
+	sepol_cond_rule_iter_get_count;
 	sepol_cond_rule_iter_get_av_data;
 	sepol_cond_rule_iter_get_type_data;
 	sepol_cond_rule_iter_get_xperm_driver;
@@ -409,6 +419,7 @@ LIBSEPOL_3.12 {
 	sepol_constraint_remove_expr;
 	sepol_devicetreecon_iter_create;
 	sepol_devicetreecon_iter_destroy;
+	sepol_devicetreecon_iter_get_count;
 	sepol_devicetreecon_iter_get_context_role;
 	sepol_devicetreecon_iter_get_context_type;
 	sepol_devicetreecon_iter_get_context_user;
@@ -419,9 +430,11 @@ LIBSEPOL_3.12 {
 	sepol_devicetreecon_iter_next;
 	sepol_filename_trans_iter_create;
 	sepol_filename_trans_iter_destroy;
+	sepol_filename_trans_iter_get_count;
 	sepol_filename_trans_iter_next;
 	sepol_fsuse_iter_create;
 	sepol_fsuse_iter_destroy;
+	sepol_fsuse_iter_get_count;
 	sepol_fsuse_iter_get_context_role;
 	sepol_fsuse_iter_get_context_type;
 	sepol_fsuse_iter_get_context_user;
@@ -432,6 +445,7 @@ LIBSEPOL_3.12 {
 	sepol_fsuse_iter_next;
 	sepol_genfscon_iter_create;
 	sepol_genfscon_iter_destroy;
+	sepol_genfscon_iter_get_count;
 	sepol_genfscon_iter_get_context_role;
 	sepol_genfscon_iter_get_context_type;
 	sepol_genfscon_iter_get_context_user;
@@ -442,6 +456,7 @@ LIBSEPOL_3.12 {
 	sepol_genfscon_iter_next;
 	sepol_ibendportcon_iter_create;
 	sepol_ibendportcon_iter_destroy;
+	sepol_ibendportcon_iter_get_count;
 	sepol_ibendportcon_iter_get_context_role;
 	sepol_ibendportcon_iter_get_context_type;
 	sepol_ibendportcon_iter_get_context_user;
@@ -452,6 +467,7 @@ LIBSEPOL_3.12 {
 	sepol_ibendportcon_iter_next;
 	sepol_ibpkeycon_iter_create;
 	sepol_ibpkeycon_iter_destroy;
+	sepol_ibpkeycon_iter_get_count;
 	sepol_ibpkeycon_iter_get_context_role;
 	sepol_ibpkeycon_iter_get_context_type;
 	sepol_ibpkeycon_iter_get_context_user;
@@ -462,6 +478,7 @@ LIBSEPOL_3.12 {
 	sepol_ibpkeycon_iter_next;
 	sepol_iomemcon_iter_create;
 	sepol_iomemcon_iter_destroy;
+	sepol_iomemcon_iter_get_count;
 	sepol_iomemcon_iter_get_context_role;
 	sepol_iomemcon_iter_get_context_type;
 	sepol_iomemcon_iter_get_context_user;
@@ -472,6 +489,7 @@ LIBSEPOL_3.12 {
 	sepol_iomemcon_iter_next;
 	sepol_ioportcon_iter_create;
 	sepol_ioportcon_iter_destroy;
+	sepol_ioportcon_iter_get_count;
 	sepol_ioportcon_iter_get_context_role;
 	sepol_ioportcon_iter_get_context_type;
 	sepol_ioportcon_iter_get_context_user;
@@ -482,6 +500,7 @@ LIBSEPOL_3.12 {
 	sepol_ioportcon_iter_next;
 	sepol_isid_iter_create;
 	sepol_isid_iter_destroy;
+	sepol_isid_iter_get_count;
 	sepol_isid_iter_get_context_role;
 	sepol_isid_iter_get_context_type;
 	sepol_isid_iter_get_context_user;
@@ -493,6 +512,7 @@ LIBSEPOL_3.12 {
 	sepol_isid_iter_next;
 	sepol_netifcon_iter_create;
 	sepol_netifcon_iter_destroy;
+	sepol_netifcon_iter_get_count;
 	sepol_netifcon_iter_get_context_role;
 	sepol_netifcon_iter_get_context_type;
 	sepol_netifcon_iter_get_context_user;
@@ -510,6 +530,7 @@ LIBSEPOL_3.12 {
 	sepol_netifcon_iter_next;
 	sepol_nodecon6_iter_create;
 	sepol_nodecon6_iter_destroy;
+	sepol_nodecon6_iter_get_count;
 	sepol_nodecon6_iter_get_context_role;
 	sepol_nodecon6_iter_get_context_type;
 	sepol_nodecon6_iter_get_context_user;
@@ -520,6 +541,7 @@ LIBSEPOL_3.12 {
 	sepol_nodecon6_iter_next;
 	sepol_nodecon_iter_create;
 	sepol_nodecon_iter_destroy;
+	sepol_nodecon_iter_get_count;
 	sepol_nodecon_iter_get_context_role;
 	sepol_nodecon_iter_get_context_type;
 	sepol_nodecon_iter_get_context_user;
@@ -530,6 +552,7 @@ LIBSEPOL_3.12 {
 	sepol_nodecon_iter_next;
 	sepol_pcidevicecon_iter_create;
 	sepol_pcidevicecon_iter_destroy;
+	sepol_pcidevicecon_iter_get_count;
 	sepol_pcidevicecon_iter_get_context_role;
 	sepol_pcidevicecon_iter_get_context_type;
 	sepol_pcidevicecon_iter_get_context_user;
@@ -540,12 +563,15 @@ LIBSEPOL_3.12 {
 	sepol_pcidevicecon_iter_next;
 	sepol_perm_iter_create;
 	sepol_perm_iter_destroy;
+	sepol_perm_iter_get_count;
 	sepol_perm_iter_next;
 	sepol_permissive_iter_create;
 	sepol_permissive_iter_destroy;
+	sepol_permissive_iter_get_count;
 	sepol_permissive_iter_next;
 	sepol_pirqcon_iter_create;
 	sepol_pirqcon_iter_destroy;
+	sepol_pirqcon_iter_get_count;
 	sepol_pirqcon_iter_get_context_role;
 	sepol_pirqcon_iter_get_context_type;
 	sepol_pirqcon_iter_get_context_user;
@@ -556,18 +582,19 @@ LIBSEPOL_3.12 {
 	sepol_pirqcon_iter_next;
 	sepol_polcap_iter_create;
 	sepol_polcap_iter_destroy;
+	sepol_polcap_iter_get_count;
 	sepol_polcap_iter_next;
 	sepol_policydb_av_to_string;
 	sepol_policydb_extended_perms_to_string;
 	sepol_policydb_get_handle_unknown;
 	sepol_policydb_get_target_platform;
 	sepol_policydb_get_vers;
-	sepol_policydb_rebuild_attr_map;
+	sepol_policydb_init_query;
 	sepol_policydb_sid_to_context_record;
 	sepol_policydb_sid_to_context_string;
-	sepol_policydb_set_permissive_flags;
 	sepol_portcon_iter_create;
 	sepol_portcon_iter_destroy;
+	sepol_portcon_iter_get_count;
 	sepol_portcon_iter_get_context_role;
 	sepol_portcon_iter_get_context_type;
 	sepol_portcon_iter_get_context_user;
@@ -578,6 +605,7 @@ LIBSEPOL_3.12 {
 	sepol_portcon_iter_next;
 	sepol_range_trans_iter_create;
 	sepol_range_trans_iter_destroy;
+	sepol_range_trans_iter_get_count;
 	sepol_range_trans_iter_get_high_cat;
 	sepol_range_trans_iter_get_high_sens;
 	sepol_range_trans_iter_get_low_cat;
@@ -587,6 +615,7 @@ LIBSEPOL_3.12 {
 	sepol_role_add_type;
 	sepol_role_allow_iter_create;
 	sepol_role_allow_iter_destroy;
+	sepol_role_allow_iter_get_count;
 	sepol_role_allow_iter_next;
 	sepol_role_clone;
 	sepol_role_compare;
@@ -605,6 +634,7 @@ LIBSEPOL_3.12 {
 	sepol_role_has_type;
 	sepol_role_iter_create;
 	sepol_role_iter_destroy;
+	sepol_role_iter_get_count;
 	sepol_role_iter_next;
 	sepol_role_key_create;
 	sepol_role_key_extract;
@@ -617,17 +647,19 @@ LIBSEPOL_3.12 {
 	sepol_role_set_name;
 	sepol_role_trans_iter_create;
 	sepol_role_trans_iter_destroy;
+	sepol_role_trans_iter_get_count;
 	sepol_role_trans_iter_next;
 	sepol_role_value_to_name;
 	sepol_sens_iter_create;
 	sepol_sens_iter_destroy;
+	sepol_sens_iter_get_count;
 	sepol_sens_iter_get_level_cat;
 	sepol_sens_iter_next;
 	sepol_sens_value_to_name;
 	sepol_sid_table_free;
 	sepol_sid_table_load_isids;
 	sepol_sid_table_new;
-	sepol_sid_table_set_opaque;
+	sepol_sid_table_activate;
 	sepol_sid_to_context_record;
 	sepol_type_add_subtype;
 	sepol_type_clone;
@@ -647,6 +679,7 @@ LIBSEPOL_3.12 {
 	sepol_type_has_subtype;
 	sepol_type_iter_create;
 	sepol_type_iter_destroy;
+	sepol_type_iter_get_count;
 	sepol_type_iter_next;
 	sepol_type_key_create;
 	sepol_type_key_extract;
@@ -670,6 +703,7 @@ LIBSEPOL_3.12 {
 	sepol_user_get_range_low_sens;
 	sepol_user_iter_create;
 	sepol_user_iter_destroy;
+	sepol_user_iter_get_count;
 	sepol_user_iter_next;
 	sepol_user_query_by_value;
 	sepol_user_value_to_name;
@@ -677,5 +711,6 @@ LIBSEPOL_3.12 {
 	sepol_values_to_context_string;
 	sepol_xperm_iter_create;
 	sepol_xperm_iter_destroy;
+	sepol_xperm_iter_get_count;
 	sepol_xperm_iter_next;
 } LIBSEPOL_3.11;

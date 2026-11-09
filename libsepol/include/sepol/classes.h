@@ -53,11 +53,19 @@ extern int sepol_class_perm_value_to_name(sepol_handle_t *handle,
  * hash-bucket order of the internal symbol table) and may change between
  * library versions or policydb loads; callers must not rely on it
  * matching declaration order or being stable across calls.
+ *
+ * Ownership: each successful sepol_class_iter_next() that produces an
+ * item heap-allocates a fresh caller-owned sepol_class_t (free with
+ * sepol_class_free()), including permission names and constraint
+ * expression snapshots. Exhaustion: returns 0 with *item == NULL.
  */
 extern int sepol_class_iter_create(sepol_handle_t *handle,
 				   const sepol_policydb_t *p,
 				   sepol_class_iter_t **iter);
 extern void sepol_class_iter_destroy(sepol_class_iter_t *iter);
+
+/* O(1) snapshot taken at *_create(); not refreshed if the policydb mutates. NULL iter returns 0. */
+extern size_t sepol_class_iter_get_count(const sepol_class_iter_t *iter);
 extern int sepol_class_iter_next(sepol_handle_t *handle,
 				 sepol_class_iter_t *iter,
 				 sepol_class_t **item);

@@ -3,6 +3,7 @@
 #include <sepol/policydb/hashtab.h>
 #include <sepol/policydb/mls_types.h>
 #include <sepol/policydb/policydb.h>
+#include <stddef.h>
 #include <stdlib.h>
 
 #include "cat_set_internal.h"
@@ -12,6 +13,7 @@ struct sepol_range_trans_iter {
 	hashtab_iter_t ht_iter;
 	const range_trans_t *last_key;
 	const mls_range_t *last_range;
+	size_t count;
 };
 
 int sepol_range_trans_iter_create(sepol_handle_t *handle,
@@ -20,7 +22,7 @@ int sepol_range_trans_iter_create(sepol_handle_t *handle,
 {
 	if (!iter)
 		return STATUS_ERR;
-	if (!handle || !p) {
+	if (!p) {
 		*iter = NULL;
 		return STATUS_ERR;
 	}
@@ -35,6 +37,7 @@ int sepol_range_trans_iter_create(sepol_handle_t *handle,
 	hashtab_iter_init(p->p.range_tr, &tmp->ht_iter);
 	tmp->last_key = NULL;
 	tmp->last_range = NULL;
+	tmp->count = p->p.range_tr ? p->p.range_tr->nel : 0;
 
 	*iter = tmp;
 	return STATUS_SUCCESS;
@@ -45,12 +48,19 @@ void sepol_range_trans_iter_destroy(sepol_range_trans_iter_t *iter)
 	free(iter);
 }
 
+size_t sepol_range_trans_iter_get_count(const sepol_range_trans_iter_t *iter)
+{
+	if (!iter)
+		return 0;
+	return iter->count;
+}
+
 int sepol_range_trans_iter_next(sepol_handle_t *handle __attribute__((unused)),
 				sepol_range_trans_iter_t *iter,
 				uint32_t *source_type, uint32_t *target_type,
-				uint32_t *target_class)
+				uint32_t *target_class, int *has_next)
 {
-	if (!iter || !source_type || !target_type || !target_class)
+	if (!iter || !source_type || !target_type || !target_class || !has_next)
 		return STATUS_ERR;
 
 	hashtab_key_t hkey;
@@ -61,6 +71,7 @@ int sepol_range_trans_iter_next(sepol_handle_t *handle __attribute__((unused)),
 		*source_type = 0;
 		*target_type = 0;
 		*target_class = 0;
+		*has_next = 0;
 		iter->last_key = NULL;
 		iter->last_range = NULL;
 		return STATUS_SUCCESS;
@@ -72,6 +83,7 @@ int sepol_range_trans_iter_next(sepol_handle_t *handle __attribute__((unused)),
 	*source_type = iter->last_key->source_type;
 	*target_type = iter->last_key->target_type;
 	*target_class = iter->last_key->target_class;
+	*has_next = 1;
 
 	return STATUS_SUCCESS;
 }

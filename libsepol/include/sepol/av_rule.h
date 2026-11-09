@@ -4,6 +4,7 @@
 #include <sepol/handle.h>
 #include <sepol/policydb.h>
 #include <stdint.h>
+#include <stddef.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -17,7 +18,13 @@ typedef struct sepol_avtab_iter sepol_avtab_iter_t;
 /*
  * Create an iterator over unconditional TE rules (te_avtab).
  * If 'specified' is 0, all rule types are returned. Otherwise it is a
- * bitmask of AVTAB_* flags (from constants.h) to filter by.
+ * bitmask of SEPOL_AVTAB_* flags (from constants.h) to filter by.
+ *
+ * Kernel-format only: te_avtab is populated for POLICY_KERN policydbs.
+ * On a POLICY_BASE/POLICY_MOD (source/module) policydb the table is
+ * empty -- TE rules live on per-decl avrule_block lists instead -- so
+ * this iterator silently yields nothing. Expand/link to a kernel
+ * policydb before using these iterators for analysis.
  *
  * Iteration order is unspecified (currently hash-bucket order of the
  * internal avtab) and may change between library versions or policydb
@@ -29,6 +36,9 @@ extern int sepol_avtab_iter_create(sepol_handle_t *handle,
 				   sepol_avtab_iter_t **iter);
 
 extern void sepol_avtab_iter_destroy(sepol_avtab_iter_t *iter);
+
+/* O(1) snapshot taken at *_create(); not refreshed if the policydb mutates. NULL iter returns 0. */
+extern size_t sepol_avtab_iter_get_count(const sepol_avtab_iter_t *iter);
 
 /*
  * Advance to the next entry. When done, sets *ruletype to 0.
@@ -68,6 +78,9 @@ extern int sepol_perm_iter_create(sepol_handle_t *handle,
 
 extern void sepol_perm_iter_destroy(sepol_perm_iter_t *iter);
 
+/* O(1) snapshot taken at *_create(); not refreshed if the policydb mutates. NULL iter returns 0. */
+extern size_t sepol_perm_iter_get_count(const sepol_perm_iter_t *iter);
+
 /* Returns the next permission name, or NULL when done.
  * The pointer is borrowed from the policydb and must not be freed.
  * It remains valid only while the sepol_policydb_t is alive. */
@@ -88,6 +101,9 @@ extern int sepol_xperm_iter_create(sepol_handle_t *handle,
 				   sepol_xperm_iter_t **xperm_iter);
 
 extern void sepol_xperm_iter_destroy(sepol_xperm_iter_t *xperm_iter);
+
+/* O(1) snapshot taken at *_create(); not refreshed if the policydb mutates. NULL iter returns 0. */
+extern size_t sepol_xperm_iter_get_count(const sepol_xperm_iter_t *iter);
 
 /* Get the next xperm value. Sets *has_next to 0 when done. */
 extern int sepol_xperm_iter_next(sepol_handle_t *handle,

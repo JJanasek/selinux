@@ -95,15 +95,21 @@ void test_iter_users_non_empty(void)
 	sepol_user_iter_t *iter;
 	CU_ASSERT_EQUAL_FATAL(
 		sepol_user_iter_create(handle, iter_policy, &iter), 0);
+	CU_ASSERT_EQUAL(sepol_user_iter_get_count(NULL), 0);
+	size_t expected = sepol_user_iter_get_count(iter);
+	CU_ASSERT(expected > 0);
 
 	sepol_user_t *item;
+	size_t walked = 0;
 	while (1) {
 		CU_ASSERT_EQUAL(sepol_user_iter_next(handle, iter, &item), 0);
 		if (!item)
 			break;
+		walked++;
 		seen(item);
 		sepol_user_free(item);
 	}
+	CU_ASSERT_EQUAL(walked, expected);
 	CU_ASSERT_EQUAL(sepol_user_iter_next(handle, iter, &item), 0);
 	CU_ASSERT_PTR_NULL(item);
 

@@ -764,6 +764,10 @@ int sepol_constraint_remove_expr(sepol_handle_t *handle,
 }
 
 /* Constraint expresessions */
+/*
+ * Public constraint-expr records expose only positive names; see
+ * class_record.h. Setters support clone/round-trip of that view only.
+ */
 int sepol_constraint_expr_create(sepol_handle_t *handle,
 				 sepol_constraint_expr_t **expr_ptr)
 {

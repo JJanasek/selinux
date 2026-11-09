@@ -100,8 +100,11 @@ static void test_avtab_iter_all(void)
 	sepol_avtab_iter_t *iter;
 	CU_ASSERT_EQUAL_FATAL(sepol_avtab_iter_create(handle, policy, 0, &iter),
 			      0);
+	CU_ASSERT_EQUAL(sepol_avtab_iter_get_count(NULL), 0);
+	size_t expected = sepol_avtab_iter_get_count(iter);
+	CU_ASSERT(expected > 0);
 
-	int count = 0;
+	size_t count = 0;
 	uint32_t ruletype, src, tgt, cls;
 	while (1) {
 		CU_ASSERT_EQUAL_FATAL(sepol_avtab_iter_next(handle, iter,
@@ -115,6 +118,7 @@ static void test_avtab_iter_all(void)
 		CU_ASSERT(cls > 0);
 		count++;
 	}
+	CU_ASSERT_EQUAL(count, expected);
 	CU_ASSERT(count >= 5);
 
 	sepol_avtab_iter_destroy(iter);

@@ -4,11 +4,13 @@
 #include <sepol/av_rule.h>
 #include <sepol/constants.h>
 #include <sepol/policydb/avtab.h>
+#include <stddef.h>
 #include <stdint.h>
 
 struct sepol_xperm_iter {
 	uint32_t perms[8];
 	uint16_t current_bit;
+	size_t count;
 };
 
 /* Internal helper - not part of the public ABI. */

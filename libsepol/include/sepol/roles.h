@@ -5,6 +5,7 @@
 #include <sepol/role_record.h>
 #include <sepol/handle.h>
 #include <stdint.h>
+#include <stddef.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -42,11 +43,19 @@ extern int sepol_role_query_by_value(sepol_handle_t *handle,
  * assignment, which typically -- but is not guaranteed to -- match
  * declaration order; callers should not treat it as a stable guarantee
  * across policydb versions.
+ *
+ * Ownership: each successful sepol_role_iter_next() that produces an
+ * item heap-allocates a fresh caller-owned sepol_role_t (free with
+ * sepol_role_free()), including strdup'd type/subrole name lists.
+ * Exhaustion: returns 0 with *item == NULL.
  */
 extern int sepol_role_iter_create(sepol_handle_t *handle,
 				  const sepol_policydb_t *p,
 				  sepol_role_iter_t **iter);
 extern void sepol_role_iter_destroy(sepol_role_iter_t *iter);
+
+/* O(1) snapshot taken at *_create(); not refreshed if the policydb mutates. NULL iter returns 0. */
+extern size_t sepol_role_iter_get_count(const sepol_role_iter_t *iter);
 extern int sepol_role_iter_next(sepol_handle_t *handle, sepol_role_iter_t *iter,
 				sepol_role_t **item);
 

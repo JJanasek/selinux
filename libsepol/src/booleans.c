@@ -1,4 +1,5 @@
 #include <string.h>
+#include <stddef.h>
 #include <stdlib.h>
 
 #include "handle.h"
@@ -94,7 +95,7 @@ int sepol_bool_set(sepol_handle_t *handle, sepol_policydb_t *p,
 	policydb_t *policydb;
 	const char *name;
 
-	if (!handle || !p || !key || !data)
+	if (!p || !key || !data)
 		return STATUS_ERR;
 
 	policydb = &p->p;
@@ -255,6 +256,7 @@ int sepol_bool_query_by_value(sepol_handle_t *handle, const sepol_policydb_t *p,
 struct sepol_bool_iter {
 	const policydb_t *policydb;
 	uint32_t idx;
+	size_t count;
 };
 
 int sepol_bool_iter_create(sepol_handle_t *handle, const sepol_policydb_t *p,
@@ -262,7 +264,7 @@ int sepol_bool_iter_create(sepol_handle_t *handle, const sepol_policydb_t *p,
 {
 	if (!iter)
 		return STATUS_ERR;
-	if (!handle || !p) {
+	if (!p) {
 		*iter = NULL;
 		return STATUS_ERR;
 	}
@@ -275,6 +277,11 @@ int sepol_bool_iter_create(sepol_handle_t *handle, const sepol_policydb_t *p,
 	}
 	new_iter->policydb = &p->p;
 	new_iter->idx = 0;
+	new_iter->count = 0;
+	for (uint32_t i = 0; i < new_iter->policydb->p_bools.nprim; i++) {
+		if (new_iter->policydb->bool_val_to_struct[i])
+			new_iter->count++;
+	}
 
 	*iter = new_iter;
 	return STATUS_SUCCESS;
@@ -283,6 +290,13 @@ int sepol_bool_iter_create(sepol_handle_t *handle, const sepol_policydb_t *p,
 void sepol_bool_iter_destroy(sepol_bool_iter_t *iter)
 {
 	free(iter);
+}
+
+size_t sepol_bool_iter_get_count(const sepol_bool_iter_t *iter)
+{
+	if (!iter)
+		return 0;
+	return iter->count;
 }
 
 int sepol_bool_iter_next(sepol_handle_t *handle, sepol_bool_iter_t *iter,

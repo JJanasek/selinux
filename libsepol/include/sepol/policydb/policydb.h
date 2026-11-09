@@ -253,7 +253,77 @@ typedef struct class_perm_node {
 	struct class_perm_node *next;
 } class_perm_node_t;
 
-/* xperm_*, EXTENDED_PERMS_LEN, AVRULE_*, RULE_*: <sepol/constants.h> */
+/*
+ * Unprefixed aliases for internal / legacy callers of this header.
+ * #ifndef guards keep a pre-existing definition from being redefined when
+ * both this header and an older include path are used together.
+ */
+#ifndef xperm_test
+#define xperm_test(x, p) (1U & ((p)[(x) >> 5] >> ((x) & 0x1f)))
+#define xperm_set(x, p) ((p)[(x) >> 5] |= (1U << ((x) & 0x1f)))
+#define xperm_clear(x, p) ((p)[(x) >> 5] &= ~(1U << ((x) & 0x1f)))
+#endif
+
+#ifndef EXTENDED_PERMS_LEN
+#define EXTENDED_PERMS_LEN SEPOL_EXTENDED_PERMS_LEN
+#endif
+
+#ifndef AVRULE_ALLOWED
+#define AVRULE_ALLOWED SEPOL_AVRULE_ALLOWED
+#define AVRULE_AUDITALLOW SEPOL_AVRULE_AUDITALLOW
+#define AVRULE_AUDITDENY SEPOL_AVRULE_AUDITDENY
+#define AVRULE_DONTAUDIT SEPOL_AVRULE_DONTAUDIT
+#define AVRULE_NEVERALLOW SEPOL_AVRULE_NEVERALLOW
+#define AVRULE_AV SEPOL_AVRULE_AV
+#define AVRULE_TRANSITION SEPOL_AVRULE_TRANSITION
+#define AVRULE_MEMBER SEPOL_AVRULE_MEMBER
+#define AVRULE_CHANGE SEPOL_AVRULE_CHANGE
+#define AVRULE_TYPE SEPOL_AVRULE_TYPE
+#define AVRULE_XPERMS_ALLOWED SEPOL_AVRULE_XPERMS_ALLOWED
+#define AVRULE_XPERMS_AUDITALLOW SEPOL_AVRULE_XPERMS_AUDITALLOW
+#define AVRULE_XPERMS_DONTAUDIT SEPOL_AVRULE_XPERMS_DONTAUDIT
+#define AVRULE_XPERMS_NEVERALLOW SEPOL_AVRULE_XPERMS_NEVERALLOW
+#define AVRULE_XPERMS SEPOL_AVRULE_XPERMS
+#define AVRULE_XPERMS_IOCTLFUNCTION SEPOL_AVRULE_XPERMS_IOCTLFUNCTION
+#define AVRULE_XPERMS_IOCTLDRIVER SEPOL_AVRULE_XPERMS_IOCTLDRIVER
+#define AVRULE_XPERMS_NLMSG SEPOL_AVRULE_XPERMS_NLMSG
+#endif
+
+#ifndef RULE_SELF
+#define RULE_SELF SEPOL_RULE_SELF
+#define RULE_NOTSELF SEPOL_RULE_NOTSELF
+#endif
+
+#ifndef SYM_COMMONS
+#define SYM_COMMONS SEPOL_SYM_COMMONS
+#define SYM_CLASSES SEPOL_SYM_CLASSES
+#define SYM_ROLES SEPOL_SYM_ROLES
+#define SYM_TYPES SEPOL_SYM_TYPES
+#define SYM_USERS SEPOL_SYM_USERS
+#define SYM_BOOLS SEPOL_SYM_BOOLS
+#define SYM_LEVELS SEPOL_SYM_LEVELS
+#define SYM_CATS SEPOL_SYM_CATS
+#define SYM_NUM SEPOL_SYM_NUM
+#endif
+
+#ifndef OCON_ISID
+#define OCON_ISID SEPOL_OCON_ISID
+#define OCON_FS SEPOL_OCON_FS
+#define OCON_PORT SEPOL_OCON_PORT
+#define OCON_NETIF SEPOL_OCON_NETIF
+#define OCON_NODE SEPOL_OCON_NODE
+#define OCON_FSUSE SEPOL_OCON_FSUSE
+#define OCON_NODE6 SEPOL_OCON_NODE6
+#define OCON_IBPKEY SEPOL_OCON_IBPKEY
+#define OCON_IBENDPORT SEPOL_OCON_IBENDPORT
+#define OCON_XEN_ISID SEPOL_OCON_XEN_ISID
+#define OCON_XEN_PIRQ SEPOL_OCON_XEN_PIRQ
+#define OCON_XEN_IOPORT SEPOL_OCON_XEN_IOPORT
+#define OCON_XEN_IOMEM SEPOL_OCON_XEN_IOMEM
+#define OCON_XEN_PCIDEVICE SEPOL_OCON_XEN_PCIDEVICE
+#define OCON_XEN_DEVICETREE SEPOL_OCON_XEN_DEVICETREE
+#define OCON_NUM SEPOL_OCON_NUM
+#endif
 
 typedef struct av_extended_perms {
 	uint8_t specified;
@@ -263,7 +333,7 @@ typedef struct av_extended_perms {
 } av_extended_perms_t;
 
 typedef struct avrule {
-	/* specified: AVRULE_* (same bits as AVTAB_*); flags: RULE_* - sepol/constants.h */
+	/* specified: AVRULE_* (same bits as AVTAB_*); flags: RULE_* */
 	uint32_t specified;
 	uint32_t flags;
 	type_set_t stypes;
@@ -367,8 +437,6 @@ typedef struct genfs {
 	struct ocontext *head;
 	struct genfs *next;
 } genfs_t;
-
-/* SYM_*, OCON_*, OCON_NUM: <sepol/constants.h> */
 
 /* section: module information */
 

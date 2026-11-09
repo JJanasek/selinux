@@ -176,7 +176,19 @@ extern int sepol_constraint_remove_expr(sepol_handle_t *handle,
 					sepol_constraint_t *constraint,
 					uint32_t index);
 
-/* Constraint expressions */
+/* Constraint expressions.
+ *
+ * When materializing a constraint expression from a policydb, only the
+ * positive names bitmap is exposed via sepol_constraint_expr_get_names().
+ * For type-set expressions this means type_names->types only: negset and
+ * flags (e.g. TYPE_STAR / TYPE_COMP) from non-kernel (POLICY_BASE /
+ * POLICY_MOD) type_set_t data are not preserved on the public record.
+ *
+ * The sepol_constraint_expr_set_*() / add_name() setters exist primarily
+ * so records can be cloned and round-tripped through the public API; they
+ * are not a full authoring surface for every on-disk constraint form.
+ */
+
 extern int sepol_constraint_expr_create(sepol_handle_t *handle,
 					sepol_constraint_expr_t **expr_ptr);
 extern int sepol_constraint_expr_clone(sepol_handle_t *handle,

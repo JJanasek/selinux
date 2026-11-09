@@ -133,7 +133,7 @@ int sepol_set_sidtab(sidtab_t *s)
  * if none is active. Used internally (e.g. by sepol_sid_table_free()) to
  * detect whether a given sidtab is the one actually in use, since
  * sepol_set_sidtab() can be called directly and bypass any bookkeeping
- * done by higher-level wrappers such as sepol_sid_table_set_opaque().
+ * done by higher-level wrappers such as sepol_sid_table_activate().
  */
 sidtab_t *sepol_get_sidtab(void)
 {

@@ -2,6 +2,7 @@
 
 #include <sepol/policydb/hashtab.h>
 #include <sepol/policydb/policydb.h>
+#include <stddef.h>
 #include <stdlib.h>
 
 #include "cat_set_internal.h"
@@ -12,6 +13,7 @@
 
 struct sepol_cat_iter {
 	hashtab_iter_t ht_iter;
+	size_t count;
 };
 
 int sepol_cat_iter_create(sepol_handle_t *handle, const sepol_policydb_t *p,
@@ -19,7 +21,7 @@ int sepol_cat_iter_create(sepol_handle_t *handle, const sepol_policydb_t *p,
 {
 	if (!iter)
 		return STATUS_ERR;
-	if (!handle || !p) {
+	if (!p) {
 		*iter = NULL;
 		return STATUS_ERR;
 	}
@@ -33,6 +35,7 @@ int sepol_cat_iter_create(sepol_handle_t *handle, const sepol_policydb_t *p,
 
 	hashtab_iter_init(p->p.p_cats.table, &tmp->ht_iter);
 
+	tmp->count = p->p.p_cats.table ? p->p.p_cats.table->nel : 0;
 	*iter = tmp;
 	return STATUS_SUCCESS;
 }
@@ -40,6 +43,13 @@ int sepol_cat_iter_create(sepol_handle_t *handle, const sepol_policydb_t *p,
 void sepol_cat_iter_destroy(sepol_cat_iter_t *iter)
 {
 	free(iter);
+}
+
+size_t sepol_cat_iter_get_count(const sepol_cat_iter_t *iter)
+{
+	if (!iter)
+		return 0;
+	return iter->count;
 }
 
 int sepol_cat_iter_next(sepol_handle_t *handle __attribute__((unused)),
@@ -73,6 +83,7 @@ int sepol_cat_iter_next(sepol_handle_t *handle __attribute__((unused)),
 struct sepol_sens_iter {
 	hashtab_iter_t ht_iter;
 	const level_datum_t *last;
+	size_t count;
 };
 
 int sepol_sens_iter_create(sepol_handle_t *handle, const sepol_policydb_t *p,
@@ -80,7 +91,7 @@ int sepol_sens_iter_create(sepol_handle_t *handle, const sepol_policydb_t *p,
 {
 	if (!iter)
 		return STATUS_ERR;
-	if (!handle || !p) {
+	if (!p) {
 		*iter = NULL;
 		return STATUS_ERR;
 	}
@@ -95,6 +106,7 @@ int sepol_sens_iter_create(sepol_handle_t *handle, const sepol_policydb_t *p,
 	hashtab_iter_init(p->p.p_levels.table, &tmp->ht_iter);
 	tmp->last = NULL;
 
+	tmp->count = p->p.p_levels.table ? p->p.p_levels.table->nel : 0;
 	*iter = tmp;
 	return STATUS_SUCCESS;
 }
@@ -102,6 +114,13 @@ int sepol_sens_iter_create(sepol_handle_t *handle, const sepol_policydb_t *p,
 void sepol_sens_iter_destroy(sepol_sens_iter_t *iter)
 {
 	free(iter);
+}
+
+size_t sepol_sens_iter_get_count(const sepol_sens_iter_t *iter)
+{
+	if (!iter)
+		return 0;
+	return iter->count;
 }
 
 int sepol_sens_iter_next(sepol_handle_t *handle __attribute__((unused)),

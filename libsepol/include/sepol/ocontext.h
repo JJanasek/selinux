@@ -5,6 +5,7 @@
 #include <sepol/handle.h>
 #include <sepol/policydb.h>
 #include <stdint.h>
+#include <stddef.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -24,6 +25,13 @@ extern "C" {
  * borrowed from the policydb. It remains valid only until the next call
  * on the same iterator (`_iter_next()` or `_destroy()`) and must not be
  * freed by the caller.
+ *
+ * Kernel-format ocontexts: these iterators walk policydb->ocontexts[],
+ * which is the kernel-policy representation. Prefer these raw-value
+ * *_con_iter helpers for read-only introspection. The pre-existing
+ * record-based sepol_port_iterate()/sepol_port_t (and likewise
+ * node/iface/ibpkey/ibendport) remain available for legacy record
+ * workflows; new introspection code should use the iterators below.
  */
 
 /* Initial SID iterator */
@@ -35,6 +43,9 @@ extern int sepol_isid_iter_create(sepol_handle_t *handle,
 				  sepol_isid_iter_t **iter);
 
 extern void sepol_isid_iter_destroy(sepol_isid_iter_t *iter);
+
+/* O(1) snapshot taken at *_create(); not refreshed if the policydb mutates. NULL iter returns 0. */
+extern size_t sepol_isid_iter_get_count(const sepol_isid_iter_t *iter);
 
 extern int sepol_isid_iter_next(sepol_handle_t *handle, sepol_isid_iter_t *iter,
 				uint32_t *sid);
@@ -67,6 +78,9 @@ extern int sepol_fsuse_iter_create(sepol_handle_t *handle,
 
 extern void sepol_fsuse_iter_destroy(sepol_fsuse_iter_t *iter);
 
+/* O(1) snapshot taken at *_create(); not refreshed if the policydb mutates. NULL iter returns 0. */
+extern size_t sepol_fsuse_iter_get_count(const sepol_fsuse_iter_t *iter);
+
 extern int sepol_fsuse_iter_next(sepol_handle_t *handle,
 				 sepol_fsuse_iter_t *iter, const char **name,
 				 uint32_t *behavior);
@@ -97,6 +111,9 @@ extern int sepol_genfscon_iter_create(sepol_handle_t *handle,
 				      sepol_genfscon_iter_t **iter);
 
 extern void sepol_genfscon_iter_destroy(sepol_genfscon_iter_t *iter);
+
+/* O(1) snapshot taken at *_create(); not refreshed if the policydb mutates. NULL iter returns 0. */
+extern size_t sepol_genfscon_iter_get_count(const sepol_genfscon_iter_t *iter);
 
 extern int sepol_genfscon_iter_next(sepol_handle_t *handle,
 				    sepol_genfscon_iter_t *iter,
@@ -129,6 +146,9 @@ extern int sepol_portcon_iter_create(sepol_handle_t *handle,
 				     sepol_portcon_iter_t **iter);
 
 extern void sepol_portcon_iter_destroy(sepol_portcon_iter_t *iter);
+
+/* O(1) snapshot taken at *_create(); not refreshed if the policydb mutates. NULL iter returns 0. */
+extern size_t sepol_portcon_iter_get_count(const sepol_portcon_iter_t *iter);
 
 /* has_next is set to 0 once iteration is exhausted; the other
  * out-parameters cannot be used to detect end-of-iteration since 0
@@ -164,6 +184,9 @@ extern int sepol_netifcon_iter_create(sepol_handle_t *handle,
 				      sepol_netifcon_iter_t **iter);
 
 extern void sepol_netifcon_iter_destroy(sepol_netifcon_iter_t *iter);
+
+/* O(1) snapshot taken at *_create(); not refreshed if the policydb mutates. NULL iter returns 0. */
+extern size_t sepol_netifcon_iter_get_count(const sepol_netifcon_iter_t *iter);
 
 extern int sepol_netifcon_iter_next(sepol_handle_t *handle,
 				    sepol_netifcon_iter_t *iter,
@@ -212,6 +235,9 @@ extern int sepol_nodecon_iter_create(sepol_handle_t *handle,
 
 extern void sepol_nodecon_iter_destroy(sepol_nodecon_iter_t *iter);
 
+/* O(1) snapshot taken at *_create(); not refreshed if the policydb mutates. NULL iter returns 0. */
+extern size_t sepol_nodecon_iter_get_count(const sepol_nodecon_iter_t *iter);
+
 /* has_next is set to 0 once iteration is exhausted; addr/mask cannot
  * be used to detect end-of-iteration since 0.0.0.0/0.0.0.0 is a
  * valid nodecon entry. addr and mask are each a single IPv4 address
@@ -247,6 +273,9 @@ extern int sepol_nodecon6_iter_create(sepol_handle_t *handle,
 				      sepol_nodecon6_iter_t **iter);
 
 extern void sepol_nodecon6_iter_destroy(sepol_nodecon6_iter_t *iter);
+
+/* O(1) snapshot taken at *_create(); not refreshed if the policydb mutates. NULL iter returns 0. */
+extern size_t sepol_nodecon6_iter_get_count(const sepol_nodecon6_iter_t *iter);
 
 /* addr and mask are each set to point at a borrowed, 4-element array
  * of uint32_t (the 128-bit IPv6 address or mask split into four
@@ -285,6 +314,9 @@ extern int sepol_ibpkeycon_iter_create(sepol_handle_t *handle,
 
 extern void sepol_ibpkeycon_iter_destroy(sepol_ibpkeycon_iter_t *iter);
 
+/* O(1) snapshot taken at *_create(); not refreshed if the policydb mutates. NULL iter returns 0. */
+extern size_t sepol_ibpkeycon_iter_get_count(const sepol_ibpkeycon_iter_t *iter);
+
 /* has_next is set to 0 once iteration is exhausted; the other
  * out-parameters cannot be used to detect end-of-iteration since 0
  * is a valid pkey value. */
@@ -321,6 +353,9 @@ extern int sepol_ibendportcon_iter_create(sepol_handle_t *handle,
 
 extern void sepol_ibendportcon_iter_destroy(sepol_ibendportcon_iter_t *iter);
 
+/* O(1) snapshot taken at *_create(); not refreshed if the policydb mutates. NULL iter returns 0. */
+extern size_t sepol_ibendportcon_iter_get_count(const sepol_ibendportcon_iter_t *iter);
+
 extern int sepol_ibendportcon_iter_next(sepol_handle_t *handle,
 					sepol_ibendportcon_iter_t *iter,
 					const char **dev_name, uint8_t *port);
@@ -349,6 +384,9 @@ extern int sepol_pirqcon_iter_create(sepol_handle_t *handle,
 				     sepol_pirqcon_iter_t **iter);
 
 extern void sepol_pirqcon_iter_destroy(sepol_pirqcon_iter_t *iter);
+
+/* O(1) snapshot taken at *_create(); not refreshed if the policydb mutates. NULL iter returns 0. */
+extern size_t sepol_pirqcon_iter_get_count(const sepol_pirqcon_iter_t *iter);
 
 /* has_next is set to 0 once iteration is exhausted; irq cannot be
  * used to detect end-of-iteration since 0 is a valid IRQ value. */
@@ -382,6 +420,9 @@ extern int sepol_iomemcon_iter_create(sepol_handle_t *handle,
 				      sepol_iomemcon_iter_t **iter);
 
 extern void sepol_iomemcon_iter_destroy(sepol_iomemcon_iter_t *iter);
+
+/* O(1) snapshot taken at *_create(); not refreshed if the policydb mutates. NULL iter returns 0. */
+extern size_t sepol_iomemcon_iter_get_count(const sepol_iomemcon_iter_t *iter);
 
 /* has_next is set to 0 once iteration is exhausted; low_iomem/
  * high_iomem cannot be used to detect end-of-iteration since 0 is a
@@ -418,6 +459,9 @@ extern int sepol_ioportcon_iter_create(sepol_handle_t *handle,
 
 extern void sepol_ioportcon_iter_destroy(sepol_ioportcon_iter_t *iter);
 
+/* O(1) snapshot taken at *_create(); not refreshed if the policydb mutates. NULL iter returns 0. */
+extern size_t sepol_ioportcon_iter_get_count(const sepol_ioportcon_iter_t *iter);
+
 /* has_next is set to 0 once iteration is exhausted; low_ioport/
  * high_ioport cannot be used to detect end-of-iteration since 0 is
  * a valid address value. */
@@ -453,6 +497,9 @@ extern int sepol_pcidevicecon_iter_create(sepol_handle_t *handle,
 
 extern void sepol_pcidevicecon_iter_destroy(sepol_pcidevicecon_iter_t *iter);
 
+/* O(1) snapshot taken at *_create(); not refreshed if the policydb mutates. NULL iter returns 0. */
+extern size_t sepol_pcidevicecon_iter_get_count(const sepol_pcidevicecon_iter_t *iter);
+
 /* has_next is set to 0 once iteration is exhausted; device cannot
  * be used to detect end-of-iteration since 0 is a valid device
  * value. */
@@ -484,6 +531,9 @@ extern int sepol_devicetreecon_iter_create(sepol_handle_t *handle,
 					   sepol_devicetreecon_iter_t **iter);
 
 extern void sepol_devicetreecon_iter_destroy(sepol_devicetreecon_iter_t *iter);
+
+/* O(1) snapshot taken at *_create(); not refreshed if the policydb mutates. NULL iter returns 0. */
+extern size_t sepol_devicetreecon_iter_get_count(const sepol_devicetreecon_iter_t *iter);
 
 extern int sepol_devicetreecon_iter_next(sepol_handle_t *handle,
 					 sepol_devicetreecon_iter_t *iter,

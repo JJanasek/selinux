@@ -4,6 +4,7 @@
 #include <sepol/policydb/avtab.h>
 #include <sepol/policydb/policydb.h>
 #include <sepol/policydb/util.h>
+#include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -20,6 +21,7 @@ struct sepol_avtab_iter {
 	uint32_t specified_filter;
 	const avtab_datum_t *last_datum;
 	uint16_t last_specified;
+	size_t count;
 };
 
 static void avtab_iter_advance(sepol_avtab_iter_t *iter)
@@ -43,7 +45,7 @@ int sepol_avtab_iter_create(sepol_handle_t *handle, const sepol_policydb_t *p,
 {
 	if (!iter)
 		return STATUS_ERR;
-	if (!handle || !p) {
+	if (!p) {
 		*iter = NULL;
 		return STATUS_ERR;
 	}
@@ -62,6 +64,19 @@ int sepol_avtab_iter_create(sepol_handle_t *handle, const sepol_policydb_t *p,
 	tmp->last_datum = NULL;
 	tmp->last_specified = 0;
 
+	if (!tmp->specified_filter) {
+		tmp->count = tmp->avtab->nel;
+	} else {
+		tmp->count = 0;
+		for (uint32_t b = 0; b < tmp->avtab->nslot; b++) {
+			for (avtab_ptr_t n = tmp->avtab->htable[b]; n;
+			     n = n->next) {
+				if (n->key.specified & tmp->specified_filter)
+					tmp->count++;
+			}
+		}
+	}
+
 	avtab_iter_advance(tmp);
 
 	*iter = tmp;
@@ -71,6 +86,13 @@ int sepol_avtab_iter_create(sepol_handle_t *handle, const sepol_policydb_t *p,
 void sepol_avtab_iter_destroy(sepol_avtab_iter_t *iter)
 {
 	free(iter);
+}
+
+size_t sepol_avtab_iter_get_count(const sepol_avtab_iter_t *iter)
+{
+	if (!iter)
+		return 0;
+	return iter->count;
 }
 
 int sepol_avtab_iter_next(sepol_handle_t *handle __attribute__((unused)),
@@ -141,7 +163,24 @@ struct sepol_perm_iter {
 	uint32_t target_class;
 	uint32_t perm_data;
 	uint32_t current_bit;
+	size_t count;
 };
+
+struct perm_search_data {
+	uint32_t val;
+	const char *name;
+};
+
+static int find_perm_name(hashtab_key_t key, hashtab_datum_t datum, void *data)
+{
+	struct perm_search_data *d = data;
+	perm_datum_t *perm = datum;
+	if (perm->s.value == d->val) {
+		d->name = key;
+		return 1;
+	}
+	return 0;
+}
 
 int sepol_perm_iter_create(sepol_handle_t *handle, const sepol_policydb_t *p,
 			   uint32_t target_class, uint32_t perm_data,
@@ -149,7 +188,7 @@ int sepol_perm_iter_create(sepol_handle_t *handle, const sepol_policydb_t *p,
 {
 	if (!iter)
 		return STATUS_ERR;
-	if (!handle || !p) {
+	if (!p) {
 		*iter = NULL;
 		return STATUS_ERR;
 	}
@@ -170,6 +209,34 @@ int sepol_perm_iter_create(sepol_handle_t *handle, const sepol_policydb_t *p,
 	tmp->target_class = target_class;
 	tmp->perm_data = perm_data;
 	tmp->current_bit = 0;
+	tmp->count = 0;
+
+	{
+		const class_datum_t *cladatum =
+			p->p.class_val_to_struct[target_class - 1];
+		if (cladatum) {
+			uint32_t bit;
+			uint32_t max = cladatum->permissions.nprim;
+			if (max > sizeof(perm_data) * 8)
+				max = sizeof(perm_data) * 8;
+			for (bit = 0; bit < max; bit++) {
+				if (!(perm_data & (UINT32_C(1) << bit)))
+					continue;
+				struct perm_search_data d = { .val = bit + 1,
+							      .name = NULL };
+				int rc = hashtab_map(cladatum->permissions.table,
+						     find_perm_name, &d);
+				if (!rc && cladatum->comdatum) {
+					rc = hashtab_map(
+						cladatum->comdatum->permissions
+							.table,
+						find_perm_name, &d);
+				}
+				if (rc == 1 && d.name)
+					tmp->count++;
+			}
+		}
+	}
 
 	*iter = tmp;
 	return STATUS_SUCCESS;
@@ -180,20 +247,11 @@ void sepol_perm_iter_destroy(sepol_perm_iter_t *iter)
 	free(iter);
 }
 
-struct perm_search_data {
-	uint32_t val;
-	const char *name;
-};
-
-static int find_perm_name(hashtab_key_t key, hashtab_datum_t datum, void *data)
+size_t sepol_perm_iter_get_count(const sepol_perm_iter_t *iter)
 {
-	struct perm_search_data *d = data;
-	perm_datum_t *perm = datum;
-	if (perm->s.value == d->val) {
-		d->name = key;
-		return 1;
-	}
-	return 0;
+	if (!iter)
+		return 0;
+	return iter->count;
 }
 
 int sepol_perm_iter_next(sepol_handle_t *handle __attribute__((unused)),
@@ -253,6 +311,11 @@ int sepol_xperm_iter_create_from_datum(sepol_handle_t *handle,
 	}
 	memcpy(tmp->perms, xperms->perms, sizeof(tmp->perms));
 	tmp->current_bit = 0;
+	tmp->count = 0;
+	for (uint16_t bit = 0; bit < 256; bit++) {
+		if (xperm_test(bit, tmp->perms))
+			tmp->count++;
+	}
 
 	*xperm_iter = tmp;
 	return STATUS_SUCCESS;
@@ -282,6 +345,13 @@ int sepol_xperm_iter_create(sepol_handle_t *handle,
 void sepol_xperm_iter_destroy(sepol_xperm_iter_t *xperm_iter)
 {
 	free(xperm_iter);
+}
+
+size_t sepol_xperm_iter_get_count(const sepol_xperm_iter_t *iter)
+{
+	if (!iter)
+		return 0;
+	return iter->count;
 }
 
 int sepol_xperm_iter_next(sepol_handle_t *handle __attribute__((unused)),

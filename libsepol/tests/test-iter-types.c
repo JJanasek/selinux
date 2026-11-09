@@ -117,15 +117,21 @@ void test_iter_types_non_empty(void)
 	sepol_type_iter_t *type_iter;
 	CU_ASSERT_EQUAL_FATAL(
 		sepol_type_iter_create(handle, iter_policy, &type_iter), 0);
+	CU_ASSERT_EQUAL(sepol_type_iter_get_count(NULL), 0);
+	size_t expected = sepol_type_iter_get_count(type_iter);
+	CU_ASSERT(expected > 0);
 
+	size_t walked = 0;
 	while (1) {
 		CU_ASSERT_EQUAL(sepol_type_iter_next(handle, type_iter, &item),
 				0);
 		if (!item)
 			break;
+		walked++;
 		seen(item);
 		sepol_type_free(item);
 	}
+	CU_ASSERT_EQUAL(walked, expected);
 	CU_ASSERT_EQUAL(sepol_type_iter_next(handle, type_iter, &item), 0);
 	CU_ASSERT_PTR_NULL(item);
 

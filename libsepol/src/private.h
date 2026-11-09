@@ -126,6 +126,10 @@ extern int str_read(char **strp, struct policy_file *fp, size_t len);
 		return STATUS_SUCCESS;                                   \
 	}
 
+
+/* Process-global active SID table (services.c); used by sid_table wrappers. */
+sidtab_t *sepol_get_sidtab(void);
+
 #ifndef HAVE_REALLOCARRAY
 static inline void *reallocarray(void *ptr, size_t nmemb, size_t size)
 {

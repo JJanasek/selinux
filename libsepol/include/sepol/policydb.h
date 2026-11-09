@@ -161,21 +161,16 @@ extern int sepol_policydb_mls_enabled(const sepol_policydb_t *p);
 extern int sepol_policydb_compat_net(const sepol_policydb_t *p);
 
 /*
- * Set permissive flags on types marked as permissive in the policy.
- * Must be called after policy load to enable permissive type enforcement.
- */
-extern int sepol_policydb_set_permissive_flags(sepol_handle_t *handle,
-					       sepol_policydb_t *p);
-
-/*
- * Rebuild the type attribute mapping. Call after modifying type attributes
- * to ensure consistency.
+ * Prepare a loaded policydb for public query/introspection use.
  *
- * On out-of-memory, returns -1; the map may be only partially rebuilt in
- * that case, but the policydb is left in a self-consistent, usable state.
+ * Today this applies permissive flags from the policy's permissive_map
+ * onto the corresponding type_datum entries (required after a binary
+ * policy load before permissive-type queries see the expected state).
+ * Additional query-side setup may be folded in here later without
+ * exposing further low-level knobs.
  */
-extern int sepol_policydb_rebuild_attr_map(sepol_handle_t *handle,
-					   sepol_policydb_t *p);
+extern int sepol_policydb_init_query(sepol_handle_t *handle,
+				     sepol_policydb_t *p);
 
 #ifdef __cplusplus
 }

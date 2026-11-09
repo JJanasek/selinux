@@ -59,12 +59,19 @@ typedef struct sepol_bool_iter sepol_bool_iter_t;
  * typically -- but is not guaranteed to -- match declaration order;
  * callers should not treat it as a stable guarantee across policydb
  * versions.
+ *
+ * Ownership: each successful sepol_bool_iter_next() that produces an
+ * item heap-allocates a fresh caller-owned sepol_bool_t (free with
+ * sepol_bool_free()). Exhaustion: returns 0 with *item == NULL.
  */
 extern int sepol_bool_iter_create(sepol_handle_t *handle,
 				  const sepol_policydb_t *p,
 				  sepol_bool_iter_t **iter);
 
 extern void sepol_bool_iter_destroy(sepol_bool_iter_t *iter);
+
+/* O(1) snapshot taken at *_create(); not refreshed if the policydb mutates. NULL iter returns 0. */
+extern size_t sepol_bool_iter_get_count(const sepol_bool_iter_t *iter);
 
 extern int sepol_bool_iter_next(sepol_handle_t *handle, sepol_bool_iter_t *iter,
 				sepol_bool_t **item);

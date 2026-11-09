@@ -14,6 +14,7 @@
 struct sepol_class_iter {
 	const sepol_policydb_t *p;
 	hashtab_iter_t hashtab_iter;
+	size_t count;
 };
 
 struct class_add_perm_args {
@@ -534,7 +535,7 @@ int sepol_class_iter_create(sepol_handle_t *handle, const sepol_policydb_t *p,
 {
 	if (!iter)
 		return STATUS_ERR;
-	if (!handle || !p) {
+	if (!p) {
 		ERR(handle, "invalid argument to sepol_class_iter_create");
 		*iter = NULL;
 		return STATUS_ERR;
@@ -548,6 +549,7 @@ int sepol_class_iter_create(sepol_handle_t *handle, const sepol_policydb_t *p,
 	new->p = p;
 	hashtab_iter_init(p->p.p_classes.table, &new->hashtab_iter);
 
+	new->count = p->p.p_classes.table ? p->p.p_classes.table->nel : 0;
 	*iter = new;
 
 	return STATUS_SUCCESS;
@@ -556,6 +558,13 @@ int sepol_class_iter_create(sepol_handle_t *handle, const sepol_policydb_t *p,
 void sepol_class_iter_destroy(sepol_class_iter_t *iter)
 {
 	free(iter);
+}
+
+size_t sepol_class_iter_get_count(const sepol_class_iter_t *iter)
+{
+	if (!iter)
+		return 0;
+	return iter->count;
 }
 
 int sepol_class_iter_next(sepol_handle_t *handle, sepol_class_iter_t *iter,

@@ -47,7 +47,11 @@ static void drain_cat_iter(sepol_cat_set_iter_t *cat_iter)
 {
 	CU_ASSERT_PTR_NOT_NULL_FATAL(cat_iter);
 	uint32_t cat_val;
-	CU_ASSERT_EQUAL(sepol_cat_set_iter_next(handle, cat_iter, &cat_val), 0);
+	int has_next;
+	CU_ASSERT_EQUAL(sepol_cat_set_iter_next(handle, cat_iter, &cat_val,
+						&has_next),
+			0);
+	CU_ASSERT_EQUAL(has_next, 0);
 	sepol_cat_set_iter_destroy(cat_iter);
 }
 
@@ -156,10 +160,12 @@ static void test_role_allow_iter(void)
 	int count = 0, found = 0;
 
 	while (1) {
+		int has_next;
 		CU_ASSERT_EQUAL_FATAL(sepol_role_allow_iter_next(
-					      handle, iter, &role, &new_role),
+					      handle, iter, &role, &new_role,
+					      &has_next),
 				      0);
-		if (role == 0)
+		if (!has_next)
 			break;
 		count++;
 		if (role == role1_val && new_role == role2_val)
@@ -185,11 +191,13 @@ static void test_role_trans_iter(void)
 	int count = 0, found = 0;
 
 	while (1) {
+		int has_next;
 		CU_ASSERT_EQUAL_FATAL(
 			sepol_role_trans_iter_next(handle, iter, &role, &type,
-						   &tclass, &new_role),
+						   &tclass, &new_role,
+						   &has_next),
 			0);
-		if (role == 0)
+		if (!has_next)
 			break;
 		count++;
 		if (role == role1_val && type == type1_val &&
@@ -225,12 +233,14 @@ static void test_filename_trans_iter(void)
 	 * transitions, and must not show up here.
 	 */
 	while (1) {
+		int has_next;
 		CU_ASSERT_EQUAL_FATAL(sepol_filename_trans_iter_next(
 					      handle, iter, &source_type,
 					      &target_type, &target_class,
-					      &filename, &default_type),
+					      &filename, &default_type,
+					      &has_next),
 				      0);
-		if (source_type == 0) {
+		if (!has_next) {
 			CU_ASSERT_PTR_NULL(filename);
 			break;
 		}
@@ -257,11 +267,13 @@ static void test_range_trans_iter(void)
 	int count = 0;
 
 	while (1) {
+		int has_next;
 		CU_ASSERT_EQUAL_FATAL(sepol_range_trans_iter_next(
 					      handle, iter, &source_type,
-					      &target_type, &target_class),
+					      &target_type, &target_class,
+					      &has_next),
 				      0);
-		if (source_type == 0)
+		if (!has_next)
 			break;
 		count++;
 
@@ -285,9 +297,12 @@ static void test_isid_iter(void)
 {
 	sepol_isid_iter_t *iter;
 	CU_ASSERT_EQUAL_FATAL(sepol_isid_iter_create(handle, policy, &iter), 0);
+	CU_ASSERT_EQUAL(sepol_isid_iter_get_count(NULL), 0);
+	size_t expected = sepol_isid_iter_get_count(iter);
+	CU_ASSERT(expected > 0);
 
 	uint32_t sid;
-	int count = 0;
+	size_t count = 0;
 
 	while (1) {
 		CU_ASSERT_EQUAL_FATAL(sepol_isid_iter_next(handle, iter, &sid),
@@ -309,6 +324,7 @@ static void test_isid_iter(void)
 			CU_ASSERT(low_sens > 0);
 		}
 	}
+	CU_ASSERT_EQUAL(count, expected);
 	CU_ASSERT(count >= 1);
 
 	sepol_isid_iter_destroy(iter);
@@ -336,11 +352,11 @@ static void test_fsuse_iter(void)
 
 		if (strcmp(name, "ext3") == 0) {
 			found_ext3 = 1;
-			CU_ASSERT_EQUAL(behavior, SECURITY_FS_USE_XATTR);
+			CU_ASSERT_EQUAL(behavior, SEPOL_SECURITY_FS_USE_XATTR);
 		}
 		if (strcmp(name, "devpts") == 0) {
 			found_devpts = 1;
-			CU_ASSERT_EQUAL(behavior, SECURITY_FS_USE_TRANS);
+			CU_ASSERT_EQUAL(behavior, SEPOL_SECURITY_FS_USE_TRANS);
 		}
 	}
 	CU_ASSERT(found_ext3);
@@ -396,11 +412,13 @@ static void test_polcap_iter(void)
 	int found_netpeer = 0;
 
 	while (1) {
+		int has_next;
 		CU_ASSERT_EQUAL_FATAL(sepol_polcap_iter_next(handle, iter,
 							     &cap_num,
-							     &cap_name),
+							     &cap_name,
+							     &has_next),
 				      0);
-		if (!cap_name)
+		if (!has_next)
 			break;
 		if (strcmp(cap_name, "network_peer_controls") == 0)
 			found_netpeer = 1;
@@ -444,14 +462,17 @@ static void test_common_iter(void)
 			      0);
 
 	const char *perm_name;
+	uint32_t perm_value;
 	int found_commonperm1 = 0;
 
 	while (1) {
-		CU_ASSERT_EQUAL_FATAL(sepol_common_perm_iter_next(handle, piter,
-								  &perm_name),
+		CU_ASSERT_EQUAL_FATAL(sepol_common_perm_iter_next(
+					     handle, piter, &perm_name,
+					     &perm_value),
 				      0);
 		if (!perm_name)
 			break;
+		CU_ASSERT(perm_value > 0);
 		if (strcmp(perm_name, "COMMONPERM1") == 0)
 			found_commonperm1 = 1;
 	}
@@ -536,9 +557,11 @@ static void test_permissive_iter(void)
 	int found_type1 = 0;
 
 	while (1) {
-		CU_ASSERT_EQUAL_FATAL(
-			sepol_permissive_iter_next(handle, iter, &type_val), 0);
-		if (type_val == 0)
+		int has_next;
+		CU_ASSERT_EQUAL_FATAL(sepol_permissive_iter_next(
+					      handle, iter, &type_val, &has_next),
+				      0);
+		if (!has_next)
 			break;
 		if (type_val == type1_val)
 			found_type1 = 1;
@@ -570,10 +593,11 @@ static void test_range_trans_mls_cat(void)
 	 * (and the destroys) can still terminate safely.
 	 */
 	while (1) {
+		int has_next = 0;
 		int rc = sepol_range_trans_iter_next(handle, iter, &src, &tgt,
-						     &cls);
+						     &cls, &has_next);
 		CU_ASSERT_EQUAL(rc, 0);
-		if (rc != 0 || src == 0)
+		if (rc != 0 || !has_next)
 			break;
 
 		sepol_cat_set_iter_t *high_cat = NULL;
@@ -583,10 +607,12 @@ static void test_range_trans_mls_cat(void)
 		CU_ASSERT_PTR_NOT_NULL(high_cat);
 		if (high_cat) {
 			uint32_t cat_val;
+			int cat_has_next = 0;
 			CU_ASSERT_EQUAL(sepol_cat_set_iter_next(
-						handle, high_cat, &cat_val),
+						handle, high_cat, &cat_val,
+						&cat_has_next),
 					0);
-			if (cat_val > 0)
+			if (cat_has_next)
 				found_with_cats = 1;
 			sepol_cat_set_iter_destroy(high_cat);
 		}
@@ -770,10 +796,12 @@ static void test_sens_level_cat_bits(void)
 				int cat_count = 0;
 				int found_cats[4] = { 0, 0, 0, 0 };
 				while (1) {
+					int has_next = 0;
 					int cat_rc = sepol_cat_set_iter_next(
-						handle, cat_iter, &cat_val);
+						handle, cat_iter, &cat_val,
+						&has_next);
 					CU_ASSERT_EQUAL(cat_rc, 0);
-					if (cat_rc != 0 || cat_val == 0)
+					if (cat_rc != 0 || !has_next)
 						break;
 					cat_count++;
 					if (cat_val >= 1 && cat_val <= 4)
@@ -813,10 +841,12 @@ static void test_role_allow_no_self(void)
 	uint32_t role, new_role;
 
 	while (1) {
+		int has_next;
 		CU_ASSERT_EQUAL_FATAL(sepol_role_allow_iter_next(
-					      handle, iter, &role, &new_role),
+					      handle, iter, &role, &new_role,
+					      &has_next),
 				      0);
-		if (role == 0)
+		if (!has_next)
 			break;
 		CU_ASSERT(role > 0);
 		CU_ASSERT(new_role > 0);
@@ -1267,6 +1297,8 @@ static void test_bool_iter(void)
 {
 	sepol_bool_iter_t *iter;
 	CU_ASSERT_EQUAL_FATAL(sepol_bool_iter_create(handle, policy, &iter), 0);
+	CU_ASSERT_EQUAL(sepol_bool_iter_get_count(NULL), 0);
+	CU_ASSERT_EQUAL(sepol_bool_iter_get_count(iter), 2);
 
 	int count = 0;
 	int found_bool1 = 0;
@@ -1309,7 +1341,7 @@ static void test_permissive_flags(void)
 	 * type_datum->flags (see type.c), so the public read path can never
 	 * distinguish a synced flag from a stale one. Desync the two
 	 * directly and assert on type_datum->flags itself, which is the
-	 * only thing sepol_policydb_set_permissive_flags() actually writes.
+	 * only thing sepol_policydb_init_query() actually writes today.
 	 */
 	type1_datum->flags &= ~(uint32_t)TYPE_FLAGS_PERMISSIVE;
 	CU_ASSERT_TRUE_FATAL(
@@ -1317,104 +1349,12 @@ static void test_permissive_flags(void)
 	CU_ASSERT_FALSE((type1_datum->flags & TYPE_FLAGS_PERMISSIVE) != 0);
 	CU_ASSERT_FALSE((type2_datum->flags & TYPE_FLAGS_PERMISSIVE) != 0);
 
-	CU_ASSERT_EQUAL(sepol_policydb_set_permissive_flags(handle, policy), 0);
+	CU_ASSERT_EQUAL(sepol_policydb_init_query(handle, policy), 0);
 
 	CU_ASSERT_TRUE((type1_datum->flags & TYPE_FLAGS_PERMISSIVE) != 0);
 	/* A non-permissive type must not be marked permissive as a
 	 * side effect. */
 	CU_ASSERT_FALSE((type2_datum->flags & TYPE_FLAGS_PERMISSIVE) != 0);
-}
-
-static void test_rebuild_attr_map(void)
-{
-	uint32_t type1_val = type_value("TYPE1");
-	uint32_t attr1_val = type_value("ATTR1");
-	type_datum_t *attr1_datum = policy->p.type_val_to_struct[attr1_val - 1];
-	CU_ASSERT_PTR_NOT_NULL_FATAL(attr1_datum);
-	CU_ASSERT_EQUAL_FATAL(attr1_datum->flavor, TYPE_ATTRIB);
-
-	/* iter.conf declares "attribute ATTR1;" with "typeattribute TYPE2
-	 * ATTR1;" and "typeattribute TYPE3 ATTR1;" -- TYPE1 is *not* a
-	 * member. Corrupt the derived reverse map as if it were stale from
-	 * before a membership change, so this test actually exercises the
-	 * rebuild logic instead of trivially passing on whatever the
-	 * initial expand-time state happened to be: falsely mark TYPE1 as
-	 * a member of ATTR1 in the reverse map (type_attr_map), while
-	 * ATTR1's real forward map (attr_type_map) still correctly omits
-	 * TYPE1. A correct rebuild must prune this stale reverse bit even
-	 * though it never touches attr_type_map itself. */
-	uint32_t type3_val = type_value("TYPE3");
-	CU_ASSERT_TRUE_FATAL(ebitmap_get_bit(
-		&policy->p.attr_type_map[attr1_val - 1], type3_val - 1));
-	CU_ASSERT_EQUAL_FATAL(
-		ebitmap_set_bit(&policy->p.type_attr_map[type1_val - 1],
-				attr1_val - 1, 1),
-		0);
-
-	sepol_type_t *type1 = NULL, *type3 = NULL;
-	CU_ASSERT_EQUAL_FATAL(sepol_type_query_by_value(handle, policy,
-							type1_val, &type1),
-			      0);
-	CU_ASSERT_TRUE(sepol_type_has_subtype(type1, "ATTR1"));
-	sepol_type_free(type1);
-
-	/*
-	 * type_attr_map[i] must always have its own bit i set ("a type is
-	 * always a member of itself" -- the same "degenerate case" that
-	 * policydb_read() sets unconditionally for every valid type or
-	 * attribute at initial policy load, see policydb.c). This is *not*
-	 * observable via sepol_type_has_subtype()/type_datum_to_record():
-	 * that public conversion deliberately excludes the self-bit from
-	 * a type's reported subtype/attribute-membership list (it would
-	 * be nonsensical for a type to be listed as its own subtype), so
-	 * it cannot be used to catch a rebuild that drops this bit. Check
-	 * the internal ebitmap directly instead -- services.c's AV
-	 * decision hot path reads type_attr_map[] directly, so losing
-	 * this bit silently breaks matching for any allow rule written
-	 * against a literal (non-attribute) type.
-	 */
-	uint32_t attr1_val_for_self = attr1_val;
-	CU_ASSERT_TRUE_FATAL(ebitmap_get_bit(
-		&policy->p.type_attr_map[type1_val - 1], type1_val - 1));
-	CU_ASSERT_TRUE_FATAL(ebitmap_get_bit(
-		&policy->p.type_attr_map[type3_val - 1], type3_val - 1));
-	CU_ASSERT_TRUE_FATAL(ebitmap_get_bit(
-		&policy->p.type_attr_map[attr1_val_for_self - 1],
-		attr1_val_for_self - 1));
-
-	CU_ASSERT_EQUAL(sepol_policydb_rebuild_attr_map(handle, policy), 0);
-
-	/* After a correct rebuild, TYPE1's stale membership must be gone... */
-	type1 = NULL;
-	CU_ASSERT_EQUAL_FATAL(sepol_type_query_by_value(handle, policy,
-							type1_val, &type1),
-			      0);
-	CU_ASSERT_FALSE(sepol_type_has_subtype(type1, "ATTR1"));
-	sepol_type_free(type1);
-
-	/* ...and TYPE3's real, unrelated membership must be intact. */
-	CU_ASSERT_EQUAL_FATAL(sepol_type_query_by_value(handle, policy,
-							type3_val, &type3),
-			      0);
-	CU_ASSERT_TRUE(sepol_type_has_subtype(type3, "ATTR1"));
-	sepol_type_free(type3);
-
-	/*
-	 * ...and every type/attribute's mandatory self-membership bit
-	 * must have survived the rebuild too (the actual regression this
-	 * covers: an earlier version of sepol_policydb_rebuild_attr_map()
-	 * cleared type_attr_map[] wholesale and only ever restored bits
-	 * for *attribute* membership, permanently losing the self-bit for
-	 * every plain type -- and for any attribute with no members --
-	 * in the policy).
-	 */
-	CU_ASSERT_TRUE(ebitmap_get_bit(&policy->p.type_attr_map[type1_val - 1],
-				       type1_val - 1));
-	CU_ASSERT_TRUE(ebitmap_get_bit(&policy->p.type_attr_map[type3_val - 1],
-				       type3_val - 1));
-	CU_ASSERT_TRUE(ebitmap_get_bit(
-		&policy->p.type_attr_map[attr1_val_for_self - 1],
-		attr1_val_for_self - 1));
 }
 
 static void test_bool_query_by_value(void)
@@ -1468,9 +1408,11 @@ static void test_user_mls_accessors(void)
 	uint32_t cat_val;
 	int rc;
 	while (1) {
-		rc = sepol_cat_set_iter_next(handle, cat_iter, &cat_val);
+		int has_next = 0;
+		rc = sepol_cat_set_iter_next(handle, cat_iter, &cat_val,
+					     &has_next);
 		CU_ASSERT_EQUAL(rc, 0);
-		if (rc != 0 || cat_val == 0)
+		if (rc != 0 || !has_next)
 			break;
 		cat_count++;
 	}
@@ -1484,9 +1426,11 @@ static void test_user_mls_accessors(void)
 	CU_ASSERT_PTR_NOT_NULL_FATAL(cat_iter);
 	cat_count = 0;
 	while (1) {
-		rc = sepol_cat_set_iter_next(handle, cat_iter, &cat_val);
+		int has_next = 0;
+		rc = sepol_cat_set_iter_next(handle, cat_iter, &cat_val,
+					     &has_next);
 		CU_ASSERT_EQUAL(rc, 0);
-		if (rc != 0 || cat_val == 0)
+		if (rc != 0 || !has_next)
 			break;
 		cat_count++;
 	}
@@ -1499,9 +1443,11 @@ static void test_user_mls_accessors(void)
 	CU_ASSERT_PTR_NOT_NULL_FATAL(cat_iter);
 	cat_count = 0;
 	while (1) {
-		rc = sepol_cat_set_iter_next(handle, cat_iter, &cat_val);
+		int has_next = 0;
+		rc = sepol_cat_set_iter_next(handle, cat_iter, &cat_val,
+					     &has_next);
 		CU_ASSERT_EQUAL(rc, 0);
-		if (rc != 0 || cat_val == 0)
+		if (rc != 0 || !has_next)
 			break;
 		cat_count++;
 	}
@@ -1826,8 +1772,15 @@ static void test_iter_next_null_output_args(void)
 					      handle, sens_iter, &cat_set_iter),
 				      0);
 		CU_ASSERT_PTR_NOT_NULL_FATAL(cat_set_iter);
-		CU_ASSERT(sepol_cat_set_iter_next(handle, cat_set_iter, NULL) !=
-			  0);
+		{
+			uint32_t cat_val;
+			CU_ASSERT(sepol_cat_set_iter_next(handle, cat_set_iter,
+							  NULL, &has_next) !=
+				  0);
+			CU_ASSERT(sepol_cat_set_iter_next(handle, cat_set_iter,
+							  &cat_val, NULL) !=
+				  0);
+		}
 		sepol_cat_set_iter_destroy(cat_set_iter);
 	}
 	sepol_sens_iter_destroy(sens_iter);
@@ -1837,8 +1790,13 @@ static void test_iter_next_null_output_args(void)
 	CU_ASSERT_EQUAL_FATAL(sepol_permissive_iter_create(handle, policy,
 							   &permissive_iter),
 			      0);
-	CU_ASSERT(sepol_permissive_iter_next(handle, permissive_iter, NULL) !=
-		  0);
+	{
+		uint32_t type_val;
+		CU_ASSERT(sepol_permissive_iter_next(handle, permissive_iter,
+						     NULL, &has_next) != 0);
+		CU_ASSERT(sepol_permissive_iter_next(handle, permissive_iter,
+						     &type_val, NULL) != 0);
+	}
 	sepol_permissive_iter_destroy(permissive_iter);
 
 	/* polcap_iter_next */
@@ -1847,10 +1805,12 @@ static void test_iter_next_null_output_args(void)
 		sepol_polcap_iter_create(handle, policy, &polcap_iter), 0);
 	uint32_t cap_num;
 	const char *cap_name;
-	CU_ASSERT(sepol_polcap_iter_next(handle, polcap_iter, NULL,
-					 &cap_name) != 0);
-	CU_ASSERT(sepol_polcap_iter_next(handle, polcap_iter, &cap_num, NULL) !=
-		  0);
+	CU_ASSERT(sepol_polcap_iter_next(handle, polcap_iter, NULL, &cap_name,
+					 &has_next) != 0);
+	CU_ASSERT(sepol_polcap_iter_next(handle, polcap_iter, &cap_num, NULL,
+					 &has_next) != 0);
+	CU_ASSERT(sepol_polcap_iter_next(handle, polcap_iter, &cap_num,
+					 &cap_name, NULL) != 0);
 	sepol_polcap_iter_destroy(polcap_iter);
 
 	/* range_trans_iter_next */
@@ -1859,11 +1819,13 @@ static void test_iter_next_null_output_args(void)
 		sepol_range_trans_iter_create(handle, policy, &rt_iter), 0);
 	uint32_t rt_src, rt_tgt, rt_cls;
 	CU_ASSERT(sepol_range_trans_iter_next(handle, rt_iter, NULL, &rt_tgt,
-					      &rt_cls) != 0);
+					      &rt_cls, &has_next) != 0);
 	CU_ASSERT(sepol_range_trans_iter_next(handle, rt_iter, &rt_src, NULL,
-					      &rt_cls) != 0);
+					      &rt_cls, &has_next) != 0);
 	CU_ASSERT(sepol_range_trans_iter_next(handle, rt_iter, &rt_src, &rt_tgt,
-					      NULL) != 0);
+					      NULL, &has_next) != 0);
+	CU_ASSERT(sepol_range_trans_iter_next(handle, rt_iter, &rt_src, &rt_tgt,
+					      &rt_cls, NULL) != 0);
 	sepol_range_trans_iter_destroy(rt_iter);
 
 	/* role_allow_iter_next / role_trans_iter_next */
@@ -1871,10 +1833,12 @@ static void test_iter_next_null_output_args(void)
 	CU_ASSERT_EQUAL_FATAL(
 		sepol_role_allow_iter_create(handle, policy, &ra_iter), 0);
 	uint32_t role, new_role;
-	CU_ASSERT(sepol_role_allow_iter_next(handle, ra_iter, NULL,
-					     &new_role) != 0);
-	CU_ASSERT(sepol_role_allow_iter_next(handle, ra_iter, &role, NULL) !=
-		  0);
+	CU_ASSERT(sepol_role_allow_iter_next(handle, ra_iter, NULL, &new_role,
+					     &has_next) != 0);
+	CU_ASSERT(sepol_role_allow_iter_next(handle, ra_iter, &role, NULL,
+					     &has_next) != 0);
+	CU_ASSERT(sepol_role_allow_iter_next(handle, ra_iter, &role, &new_role,
+					     NULL) != 0);
 	sepol_role_allow_iter_destroy(ra_iter);
 
 	sepol_role_trans_iter_t *rtr_iter;
@@ -1882,13 +1846,19 @@ static void test_iter_next_null_output_args(void)
 		sepol_role_trans_iter_create(handle, policy, &rtr_iter), 0);
 	uint32_t rtr_type, rtr_tclass;
 	CU_ASSERT(sepol_role_trans_iter_next(handle, rtr_iter, NULL, &rtr_type,
-					     &rtr_tclass, &new_role) != 0);
+					     &rtr_tclass, &new_role,
+					     &has_next) != 0);
 	CU_ASSERT(sepol_role_trans_iter_next(handle, rtr_iter, &role, NULL,
-					     &rtr_tclass, &new_role) != 0);
+					     &rtr_tclass, &new_role,
+					     &has_next) != 0);
 	CU_ASSERT(sepol_role_trans_iter_next(handle, rtr_iter, &role, &rtr_type,
-					     NULL, &new_role) != 0);
+					     NULL, &new_role, &has_next) != 0);
 	CU_ASSERT(sepol_role_trans_iter_next(handle, rtr_iter, &role, &rtr_type,
-					     &rtr_tclass, NULL) != 0);
+					     &rtr_tclass, NULL, &has_next) !=
+		  0);
+	CU_ASSERT(sepol_role_trans_iter_next(handle, rtr_iter, &role, &rtr_type,
+					     &rtr_tclass, &new_role, NULL) !=
+		  0);
 	sepol_role_trans_iter_destroy(rtr_iter);
 
 	/* filename_trans_iter_next */
@@ -1898,20 +1868,23 @@ static void test_iter_next_null_output_args(void)
 	uint32_t ft_src, ft_tgt, ft_cls, ft_def;
 	const char *ft_name;
 	CU_ASSERT(sepol_filename_trans_iter_next(handle, ft_iter, NULL, &ft_tgt,
-						 &ft_cls, &ft_name,
-						 &ft_def) != 0);
+						 &ft_cls, &ft_name, &ft_def,
+						 &has_next) != 0);
 	CU_ASSERT(sepol_filename_trans_iter_next(handle, ft_iter, &ft_src, NULL,
-						 &ft_cls, &ft_name,
-						 &ft_def) != 0);
+						 &ft_cls, &ft_name, &ft_def,
+						 &has_next) != 0);
 	CU_ASSERT(sepol_filename_trans_iter_next(handle, ft_iter, &ft_src,
 						 &ft_tgt, NULL, &ft_name,
-						 &ft_def) != 0);
+						 &ft_def, &has_next) != 0);
 	CU_ASSERT(sepol_filename_trans_iter_next(handle, ft_iter, &ft_src,
 						 &ft_tgt, &ft_cls, NULL,
-						 &ft_def) != 0);
+						 &ft_def, &has_next) != 0);
 	CU_ASSERT(sepol_filename_trans_iter_next(handle, ft_iter, &ft_src,
 						 &ft_tgt, &ft_cls, &ft_name,
-						 NULL) != 0);
+						 NULL, &has_next) != 0);
+	CU_ASSERT(sepol_filename_trans_iter_next(handle, ft_iter, &ft_src,
+						 &ft_tgt, &ft_cls, &ft_name,
+						 &ft_def, NULL) != 0);
 	sepol_filename_trans_iter_destroy(ft_iter);
 
 	/* common_iter_next / common_perm_iter_next */
@@ -1932,8 +1905,10 @@ static void test_iter_next_null_output_args(void)
 			sepol_common_perm_iter_create(handle, policy,
 						      common_value, &cp_iter),
 			0);
-		CU_ASSERT(sepol_common_perm_iter_next(handle, cp_iter, NULL) !=
-			  0);
+		CU_ASSERT(sepol_common_perm_iter_next(handle, cp_iter, NULL,
+						       &common_value) != 0);
+		CU_ASSERT(sepol_common_perm_iter_next(handle, cp_iter, &name,
+						       NULL) != 0);
 		sepol_common_perm_iter_destroy(cp_iter);
 	}
 	sepol_common_iter_destroy(common_iter);
@@ -2056,9 +2031,6 @@ int tier2_add_tests(CU_pSuite suite)
 	if (CU_add_test(suite, "bool_iter", test_bool_iter) == NULL)
 		return CU_get_error();
 	if (CU_add_test(suite, "permissive_flags", test_permissive_flags) ==
-	    NULL)
-		return CU_get_error();
-	if (CU_add_test(suite, "rebuild_attr_map", test_rebuild_attr_map) ==
 	    NULL)
 		return CU_get_error();
 	if (CU_add_test(suite, "bool_query_by_value",

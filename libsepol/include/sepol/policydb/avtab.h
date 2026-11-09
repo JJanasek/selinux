@@ -49,15 +49,49 @@
 extern "C" {
 #endif
 
+/*
+ * Unprefixed aliases for internal / legacy callers of this header.
+ * #ifndef guards keep a pre-existing definition from being redefined when
+ * both this header and an older include path are used together.
+ */
+#ifndef AVTAB_ALLOWED
+#define AVTAB_ALLOWED SEPOL_AVTAB_ALLOWED
+#define AVTAB_AUDITALLOW SEPOL_AVTAB_AUDITALLOW
+#define AVTAB_AUDITDENY SEPOL_AVTAB_AUDITDENY
+#define AVTAB_NEVERALLOW SEPOL_AVTAB_NEVERALLOW
+#define AVTAB_AV SEPOL_AVTAB_AV
+#define AVTAB_TRANSITION SEPOL_AVTAB_TRANSITION
+#define AVTAB_MEMBER SEPOL_AVTAB_MEMBER
+#define AVTAB_CHANGE SEPOL_AVTAB_CHANGE
+#define AVTAB_TYPE SEPOL_AVTAB_TYPE
+#define AVTAB_XPERMS_ALLOWED SEPOL_AVTAB_XPERMS_ALLOWED
+#define AVTAB_XPERMS_AUDITALLOW SEPOL_AVTAB_XPERMS_AUDITALLOW
+#define AVTAB_XPERMS_DONTAUDIT SEPOL_AVTAB_XPERMS_DONTAUDIT
+#define AVTAB_XPERMS_NEVERALLOW SEPOL_AVTAB_XPERMS_NEVERALLOW
+#define AVTAB_XPERMS SEPOL_AVTAB_XPERMS
+#define AVTAB_ENABLED_OLD SEPOL_AVTAB_ENABLED_OLD
+#define AVTAB_ENABLED SEPOL_AVTAB_ENABLED
+#define AVTAB_XPERMS_IOCTLFUNCTION SEPOL_AVTAB_XPERMS_IOCTLFUNCTION
+#define AVTAB_XPERMS_IOCTLDRIVER SEPOL_AVTAB_XPERMS_IOCTLDRIVER
+#define AVTAB_XPERMS_NLMSG SEPOL_AVTAB_XPERMS_NLMSG
+#endif
+
+#ifndef MAX_AVTAB_HASH_BITS
+#define MAX_AVTAB_HASH_BITS SEPOL_MAX_AVTAB_HASH_BITS
+#define MAX_AVTAB_HASH_BUCKETS SEPOL_MAX_AVTAB_HASH_BUCKETS
+#define MAX_AVTAB_HASH_MASK (MAX_AVTAB_HASH_BUCKETS - 1)
+#define MAX_AVTAB_SIZE SEPOL_MAX_AVTAB_SIZE
+#endif
+
 typedef struct avtab_key {
 	uint16_t source_type;
 	uint16_t target_type;
 	uint16_t target_class;
-	uint16_t specified; /* what fields are specified; see AVTAB_* in sepol/constants.h */
+	uint16_t specified; /* what fields are specified; see AVTAB_* above */
 } avtab_key_t;
 
 typedef struct avtab_extended_perms {
-	/* extension of the avtab_key specified; see AVTAB_XPERMS_* in sepol/constants.h */
+	/* extension of the avtab_key specified; see AVTAB_XPERMS_* above */
 	uint8_t specified;
 	uint8_t driver;
 	uint32_t perms[8];

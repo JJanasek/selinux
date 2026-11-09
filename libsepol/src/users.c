@@ -19,6 +19,7 @@
 struct sepol_user_iter {
 	const policydb_t *policydb;
 	uint32_t idx;
+	size_t count;
 };
 
 static int user_to_record(sepol_handle_t *handle, const policydb_t *policydb,
@@ -158,7 +159,7 @@ int sepol_user_modify(sepol_handle_t *handle, sepol_policydb_t *p,
 	mls_level_init(&new_dfltlevel);
 	mls_range_init(&new_range);
 
-	if (!handle || !p || !key || !user)
+	if (!p || !key || !user)
 		return STATUS_ERR;
 
 	policydb = &p->p;
@@ -516,7 +517,7 @@ int sepol_user_iter_create(sepol_handle_t *handle, const sepol_policydb_t *p,
 {
 	if (!iter)
 		return STATUS_ERR;
-	if (!handle || !p) {
+	if (!p) {
 		*iter = NULL;
 		return STATUS_ERR;
 	}
@@ -529,6 +530,11 @@ int sepol_user_iter_create(sepol_handle_t *handle, const sepol_policydb_t *p,
 	}
 	new_iter->policydb = &p->p;
 	new_iter->idx = 0;
+	new_iter->count = 0;
+	for (uint32_t i = 0; i < new_iter->policydb->p_users.nprim; i++) {
+		if (new_iter->policydb->user_val_to_struct[i])
+			new_iter->count++;
+	}
 
 	*iter = new_iter;
 	return STATUS_SUCCESS;
@@ -537,6 +543,13 @@ int sepol_user_iter_create(sepol_handle_t *handle, const sepol_policydb_t *p,
 void sepol_user_iter_destroy(sepol_user_iter_t *iter)
 {
 	free(iter);
+}
+
+size_t sepol_user_iter_get_count(const sepol_user_iter_t *iter)
+{
+	if (!iter)
+		return 0;
+	return iter->count;
 }
 
 int sepol_user_iter_next(sepol_handle_t *handle, sepol_user_iter_t *iter,

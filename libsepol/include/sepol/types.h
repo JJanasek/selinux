@@ -69,11 +69,27 @@ extern int sepol_type_query_by_value(sepol_handle_t *handle,
  * order of the internal symbol table) and may change between library
  * versions or policydb loads; callers must not rely on it matching
  * declaration order or being stable across calls.
+ *
+ * Ownership / cost: each successful sepol_type_iter_next() that produces
+ * an item heap-allocates a fresh caller-owned sepol_type_t (free with
+ * sepol_type_free()). Materializing a type record copies every member of
+ * the type's attribute/subtype lists via strdup, which on a real
+ * refpolicy can mean thousands of types times tens of attributes -- a
+ * significant allocation cost for a full walk. A cheap name+value+flavor
+ * iterator is intentionally not provided here and may arrive in a
+ * follow-up series.
+ *
+ * Exhaustion: on success, *_next() returns 0 and sets *item to a new
+ * record, or to NULL when the iterator is exhausted. Returns non-zero
+ * on error.
  */
 extern int sepol_type_iter_create(sepol_handle_t *handle,
 				  const sepol_policydb_t *p,
 				  sepol_type_iter_t **iter);
 extern void sepol_type_iter_destroy(sepol_type_iter_t *iter);
+
+/* O(1) snapshot taken at *_create(); not refreshed if the policydb mutates. NULL iter returns 0. */
+extern size_t sepol_type_iter_get_count(const sepol_type_iter_t *iter);
 extern int sepol_type_iter_next(sepol_handle_t *handle, sepol_type_iter_t *iter,
 				sepol_type_t **item);
 

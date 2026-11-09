@@ -5,6 +5,7 @@
 #include <sepol/handle.h>
 #include <sepol/policydb.h>
 #include <stdint.h>
+#include <stddef.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -33,6 +34,9 @@ extern int sepol_cat_iter_create(sepol_handle_t *handle,
 
 extern void sepol_cat_iter_destroy(sepol_cat_iter_t *iter);
 
+/* O(1) snapshot taken at *_create(); not refreshed if the policydb mutates. NULL iter returns 0. */
+extern size_t sepol_cat_iter_get_count(const sepol_cat_iter_t *iter);
+
 extern int sepol_cat_iter_next(sepol_handle_t *handle, sepol_cat_iter_t *iter,
 			       const char **name, uint32_t *value,
 			       int *isalias);
@@ -52,6 +56,9 @@ extern int sepol_sens_iter_create(sepol_handle_t *handle,
 				  sepol_sens_iter_t **iter);
 
 extern void sepol_sens_iter_destroy(sepol_sens_iter_t *iter);
+
+/* O(1) snapshot taken at *_create(); not refreshed if the policydb mutates. NULL iter returns 0. */
+extern size_t sepol_sens_iter_get_count(const sepol_sens_iter_t *iter);
 
 extern int sepol_sens_iter_next(sepol_handle_t *handle, sepol_sens_iter_t *iter,
 				const char **name, uint32_t *sens_value,
